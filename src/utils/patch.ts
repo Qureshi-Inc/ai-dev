@@ -27,7 +27,10 @@ export function applySearchReplace(
     return original.slice(0, idx) + replace + original.slice(idx + search.length);
   }
 
-  // 2. Whitespace-tolerant, line-based match.
+  // 2. Whitespace-tolerant, line-based match. Trimming each line absorbs cheap,
+  // non-semantic differences: CRLF vs LF (trailing \r is trimmed), trailing
+  // whitespace, and leading indentation. It does NOT fuzzy-match different text,
+  // so a paraphrased/guessed anchor still fails loudly below.
   const fileLines = original.split("\n");
   const searchLines = search.split("\n");
   const norm = (s: string) => s.trim();

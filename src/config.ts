@@ -45,7 +45,11 @@ const RawSchema = z.object({
   // so qwen and deepseek are not both resident at once. 0 disables sending ttl.
   LLM_TTL_SECONDS: z.coerce.number().int().nonnegative().default(900),
   IMPLEMENT_CONTEXT_FILES: z.coerce.number().int().nonnegative().default(40),
-  IMPLEMENT_MAX_FILE_BYTES: z.coerce.number().int().positive().default(24000),
+  // Per-file byte cap for implement context. Must be large enough that the model
+  // sees the FULL content of files it edits, otherwise @@EDIT SEARCH anchors for
+  // unseen regions can't match. Raised to 200000 (~50k tokens) for large single-file
+  // apps (e.g. a 55KB index.html).
+  IMPLEMENT_MAX_FILE_BYTES: z.coerce.number().int().positive().default(200000),
 
   WORKDIR: z.string().default("/home/opti3/services/ai-dev/data/repos"),
   DB_PATH: z.string().default("/home/opti3/services/ai-dev/data/agent.db"),

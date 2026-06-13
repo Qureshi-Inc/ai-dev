@@ -6,7 +6,7 @@ import type { RepoFileContext } from "../llm/prompts.js";
 import type { IssueSpec } from "../types.js";
 
 const SOURCE_EXT =
-  /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|c|cc|cpp|h|hpp|cs|php|sh|sql|yml|yaml|toml|json|md)$/i;
+  /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|c|cc|cpp|h|hpp|cs|php|sh|sql|yml|yaml|toml|json|md|html|htm|css|scss|vue|svelte|astro)$/i;
 const IMPORTANT =
   /^(package\.json|tsconfig.*\.json|readme\.md|requirements\.txt|pyproject\.toml|go\.mod|cargo\.toml|makefile|dockerfile)$/i;
 
@@ -14,7 +14,13 @@ export function readFileSafe(dir: string, rel: string, maxBytes: number): string
   try {
     const buf = readFileSync(join(dir, rel));
     if (buf.length > maxBytes) {
-      return `${buf.toString("utf8", 0, maxBytes)}\n...[truncated ${buf.length - maxBytes} bytes]`;
+      return (
+        `${buf.toString("utf8", 0, maxBytes)}\n` +
+        `...[TRUNCATED ${buf.length - maxBytes} of ${buf.length} bytes — you are NOT seeing the ` +
+        `full file. Do NOT use @@EDIT on this file: a SEARCH anchor for the unseen region cannot ` +
+        `match. If you must change it, emit a full "@@FILE ${rel} modify" block with the complete ` +
+        `corrected file instead.]`
+      );
     }
     return buf.toString("utf8");
   } catch {

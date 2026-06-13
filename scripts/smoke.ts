@@ -146,6 +146,10 @@ async function main(): Promise<void> {
     editNotFound = true;
   }
   check("edit missing SEARCH throws", editNotFound);
+  // CRLF tolerance: file uses CRLF, the model's SEARCH uses LF -> still applies.
+  applyEdits(repoDir, [{ path: "src/crlf.ts", action: "create", content: "const a = 1;\r\nconst b = 2;\r\nconst c = 3;\r\n" }]);
+  applyEdits(repoDir, [{ path: "src/crlf.ts", action: "edit", content: "", search: "const b = 2;", replace: "const b = 22;" }]);
+  check("edit tolerates CRLF file vs LF search", readFileSync(join(repoDir, "src/crlf.ts"), "utf8").includes("const b = 22;"));
   applyEdits(repoDir, [{ path: "README.md", action: "delete", content: "" }]);
   check("delete removes file", !existsSync(join(repoDir, "README.md")));
   let traversalBlocked = false;
@@ -195,6 +199,21 @@ async function main(): Promise<void> {
   check("mixed @@FILE + @@EDIT both parse", parsedMixed?.files.length === 2);
   check("mixed: first is create", parsedMixed?.files[0].action === "create");
   check("mixed: second is edit", parsedMixed?.files[1].action === "edit");
+
+  // ---- 4c. Context file reader: full vs truncated-with-notice ----
+  console.log("[context]");
+  const { readFileSafe } = await import("../src/agent/context.js");
+  const ctxDir = join(TMP, "ctxrepo");
+  mkdirSync(ctxDir, { recursive: true });
+  applyEdits(ctxDir, [
+    { path: "small.txt", action: "create", content: "line1\nline2\n" },
+    { path: "big.txt", action: "create", content: "x".repeat(5000) },
+  ]);
+  check("full file returned under cap", readFileSafe(ctxDir, "small.txt", 200000) === "line1\nline2\n");
+  const truncated = readFileSafe(ctxDir, "big.txt", 1000) ?? "";
+  check("oversize file is truncated", truncated.length < 5000 && truncated.includes("TRUNCATED"));
+  check("truncation notice steers model to @@FILE rewrite", truncated.includes("@@FILE"));
+  check("full big file when cap is high", (readFileSafe(ctxDir, "big.txt", 200000) ?? "").length === 5000);
 
   // ---- 5. CI log extractor ----
   console.log("[ci logs]");
