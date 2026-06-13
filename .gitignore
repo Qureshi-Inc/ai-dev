@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+
+# Local env / secrets
+.env
+*.pem
+secrets/
+
+# Runtime data
+data/
+repos/

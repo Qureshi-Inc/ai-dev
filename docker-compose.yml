@@ -1,0 +1,39 @@
+services:
+  ai-dev:
+    build: .
+    container_name: ai-dev-orchestrator
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Container-local overrides (host .env defaults point at host paths).
+      - PORT=8088
+      - WORKDIR=/app/data/repos
+      - DB_PATH=/app/data/agent.db
+      - LOG_PRETTY=false
+    volumes:
+      - ./data:/app/data
+      # Mounted at the same absolute path used by GITHUB_PRIVATE_KEY_PATH so host
+      # (local dev) and container resolve the key identically.
+      - ./secrets:/home/opti3/services/ai-dev/secrets:ro
+    expose:
+      - "8088"
+    # Bind to localhost on the host for local curl/debugging of /status and /healthz.
+    ports:
+      - "127.0.0.1:8088:8088"
+    networks:
+      # Join the personal Cloudflare tunnel's network so it can route to this
+      # container by name: Public Hostname service -> http://ai-dev-orchestrator:8088
+      - cloudflared
+    labels:
+      # Homepage auto-discovery (read via the Docker socket; adjust before deploying).
+      - homepage.group=Platform
+      - homepage.name=AI-Dev Agent
+      - homepage.description=Autonomous GitHub issue to merged-PR coding agent
+      - homepage.icon=mdi-robot
+      - homepage.href=https://ai-dev.qureshi.io/status
+      - homepage.siteMonitor=https://ai-dev.qureshi.io/healthz
+
+networks:
+  cloudflared:
+    external: true
+    name: cloudflared_default
