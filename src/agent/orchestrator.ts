@@ -258,6 +258,25 @@ async function processCiOutcome(jobId: number): Promise<void> {
           // that runs on it. Apply the no-CI policy.
           if (config.ci.mergeWithoutCi && config.agent.autoMerge && job.prNumber) {
             const m = await getPrMergeable(octokit, job.owner, job.repo, job.prNumber);
+            const netDeletions = m.deletions - m.additions;
+            const limit = config.agent.autoMergeMaxNetDeletions;
+            if (m.mergeable && limit > 0 && netDeletions > limit) {
+              // Destructive change with no CI to vet it -> require a human.
+              log.warn(
+                { prNumber: job.prNumber, additions: m.additions, deletions: m.deletions },
+                "no CI + large net deletion -> not auto-merging; flagging for review",
+              );
+              await comment(
+                octokit,
+                job.owner,
+                job.repo,
+                job.prNumber,
+                `ai-dev: this PR has no CI and is a large net deletion (+${m.additions} / -${m.deletions}). Not auto-merging — please review and merge manually if intended.`,
+              );
+              setState(jobId, JobState.PR_OPEN);
+              await report(client, jobId);
+              return;
+            }
             if (m.mergeable) {
               log.info({ prNumber: job.prNumber, state: m.state }, "no CI for commit; PR mergeable -> auto-merging");
               await onCiGreen(client, job);

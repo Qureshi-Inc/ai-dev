@@ -91,11 +91,11 @@ export async function getPrMergeable(
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<{ mergeable: boolean; state: string }> {
+): Promise<{ mergeable: boolean; state: string; additions: number; deletions: number }> {
   const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
   const state = data.mergeable_state ?? "unknown";
   const mergeable = data.mergeable === true && ["clean", "unstable", "has_hooks"].includes(state);
-  return { mergeable, state };
+  return { mergeable, state, additions: data.additions ?? 0, deletions: data.deletions ?? 0 };
 }
 
 export interface MergeResult {

@@ -57,6 +57,9 @@ const RawSchema = z.object({
   TRIGGER_USERS: z.string().default(""),
   MAX_RETRIES: z.coerce.number().int().nonnegative().default(5),
   AUTO_MERGE: z.string().optional(),
+  // Safety: do NOT auto-merge a no-CI PR whose net deletions (deletions - additions)
+  // exceed this, to avoid silently merging destructive changes. 0 disables the guard.
+  AUTO_MERGE_MAX_NET_DELETIONS: z.coerce.number().int().nonnegative().default(200),
   MERGE_METHOD: z.enum(["squash", "merge", "rebase"]).default("squash"),
   BRANCH_PREFIX: z.string().default("feature/issue-"),
 
@@ -115,6 +118,7 @@ export const config = {
       .filter(Boolean),
     maxRetries: raw.MAX_RETRIES,
     autoMerge: boolFromEnv(raw.AUTO_MERGE, true),
+    autoMergeMaxNetDeletions: raw.AUTO_MERGE_MAX_NET_DELETIONS,
     mergeMethod: raw.MERGE_METHOD,
     branchPrefix: raw.BRANCH_PREFIX,
     gitAuthorName: raw.GIT_AUTHOR_NAME,
