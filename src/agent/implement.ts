@@ -74,6 +74,10 @@ export async function implementChanges(args: {
   extraContextFiles?: string[];
   attempt?: number;
   pro?: boolean;
+  /** Implement only this plan step (0-based). Earlier steps already applied. */
+  stepIndex?: number;
+  /** Epic mode: instruct feature-flagging of new behavior. */
+  epic?: boolean;
 }): Promise<ImplementOutcome> {
   const tree = await fileTree(args.dir);
   const files = await selectContextFiles(args.dir, args.spec, args.extraContextFiles ?? []);
@@ -84,6 +88,8 @@ export async function implementChanges(args: {
     files,
     fileTree: tree,
     fixInstructions: args.fixInstructions,
+    stepIndex: args.stepIndex,
+    epic: args.epic,
   });
 
   const response = await callModel(TaskType.IMPLEMENT, {
@@ -95,7 +101,11 @@ export async function implementChanges(args: {
   });
 
   const result = parseDelimited(response.text) ?? parseJsonFallback(response.text);
-  if (!result || result.files.length === 0) {
+  if (!result) {
+    throw new Error("implement response contained no parseable output");
+  }
+  // A stepwise call may legitimately produce no file changes for a given step.
+  if (result.files.length === 0 && typeof args.stepIndex !== "number") {
     throw new Error("implement response contained no parseable file edits");
   }
 

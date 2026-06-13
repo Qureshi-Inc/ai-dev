@@ -53,6 +53,11 @@ const RawSchema = z.object({
   TRIGGER_LABEL: z.string().default("ai-dev"),
   // Label that both triggers the agent AND forces the "pro" model for the whole run.
   PRO_LABEL: z.string().default("ai-dev-pro"),
+  // Label for big "epic" tasks: per-step commits + pro model + feature-flagged +
+  // left for manual review (no auto-merge). Also a trigger label.
+  EPIC_LABEL: z.string().default("ai-dev-epic"),
+  // Max plan steps the implementer will execute per epic.
+  EPIC_MAX_STEPS: z.coerce.number().int().positive().default(20),
   // Comma-separated GitHub logins allowed to trigger the agent. Empty = anyone.
   TRIGGER_USERS: z.string().default(""),
   MAX_RETRIES: z.coerce.number().int().nonnegative().default(5),
@@ -113,6 +118,8 @@ export const config = {
       .filter(Boolean),
     triggerLabel: raw.TRIGGER_LABEL.trim(),
     proLabel: raw.PRO_LABEL.trim(),
+    epicLabel: raw.EPIC_LABEL.trim(),
+    epicMaxSteps: raw.EPIC_MAX_STEPS,
     triggerUsers: raw.TRIGGER_USERS.split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),

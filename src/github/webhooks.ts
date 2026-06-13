@@ -18,7 +18,11 @@ export function registerWebhooks(): void {
       logger.warn({ owner, repo }, "ignoring issue: repo not in allowlist");
       return;
     }
-    const triggerLabels = [config.agent.triggerLabel, config.agent.proLabel].filter(Boolean);
+    const triggerLabels = [
+      config.agent.triggerLabel,
+      config.agent.proLabel,
+      config.agent.epicLabel,
+    ].filter(Boolean);
     if (triggerLabels.length > 0) {
       const labels = (issue.labels ?? []).map((l) => (typeof l === "string" ? l : (l.name ?? "")));
       if (!labels.some((l) => triggerLabels.includes(l))) {
@@ -47,9 +51,13 @@ export function registerWebhooks(): void {
     );
   });
 
-  // Allow triggering after creation by applying a trigger label (ai-dev or ai-dev-pro).
+  // Allow triggering after creation by applying a trigger label (ai-dev / ai-dev-pro / ai-dev-epic).
   app.webhooks.on("issues.labeled", async ({ payload }) => {
-    const triggerLabels = [config.agent.triggerLabel, config.agent.proLabel].filter(Boolean);
+    const triggerLabels = [
+      config.agent.triggerLabel,
+      config.agent.proLabel,
+      config.agent.epicLabel,
+    ].filter(Boolean);
     if (triggerLabels.length === 0) return;
     if (!payload.label?.name || !triggerLabels.includes(payload.label.name)) return;
     maybeSubmit(

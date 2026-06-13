@@ -54,7 +54,12 @@ export function implementPrompt(args: {
   files: RepoFileContext[];
   fileTree: string;
   fixInstructions?: string;
+  /** When set, implement ONLY this plan step (0-based); earlier steps are already applied. */
+  stepIndex?: number;
+  /** Epic mode: gate new behavior behind a feature flag so each commit stays shippable. */
+  epic?: boolean;
 }): Prompt {
+  const stepwise = typeof args.stepIndex === "number";
   // NOTE: deliberately NOT JSON. Embedding whole files (HTML/code with quotes and
   // newlines) inside a JSON string is where models reliably produce invalid JSON.
   // A sentinel-delimited format keeps file contents raw, so no escaping is needed.
@@ -84,16 +89,38 @@ export function implementPrompt(args: {
     "- The ORIGINAL ISSUE below is the source of truth for required CONTENT and facts.",
     "  Include all specific details it states (proper nouns, names, exact section content,",
     "  values) VERBATIM. Do not genericize, summarize away, or invent placeholder content.",
-  ].join("\n");
+  ];
+  if (stepwise) {
+    system.push(
+      "",
+      "INCREMENTAL MODE: Implement ONLY the CURRENT STEP marked below. The repository",
+      "already contains the changes from earlier steps. Make just the changes this step",
+      "requires; do not redo earlier steps or jump ahead. If this step needs no file",
+      "changes, output a COMMIT/SUMMARY and no @@FILE blocks.",
+    );
+  }
+  if (args.epic) {
+    system.push(
+      "",
+      "EPIC MODE: This is part of a large multi-step feature. Put any NEW user-facing",
+      "behavior behind a feature flag that defaults to OFF (e.g. an env var or a flag",
+      "constant), so every commit is safe to ship even while the epic is incomplete.",
+      "Keep the project building and existing behavior unchanged when the flag is off.",
+    );
+  }
+  const systemStr = system.join("\n");
 
   const { originalRequest, ...specForJson } = args.spec;
   const userParts = [];
   if (originalRequest) {
     userParts.push(`ORIGINAL ISSUE (authoritative source for content/facts):\n${originalRequest}`);
   }
+  const planRendered = args.steps
+    .map((s, i) => `${i + 1}. ${s}${stepwise && i === args.stepIndex ? "   <-- CURRENT STEP" : ""}`)
+    .join("\n");
   userParts.push(
     `SPEC (distilled):\n${JSON.stringify(specForJson, null, 2)}`,
-    `PLAN:\n${args.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")}`,
+    `PLAN:\n${planRendered}`,
     `REPO FILE TREE:\n${args.fileTree}`,
     `RELEVANT FILE CONTENTS:\n${renderRepoContext(args.files)}`,
   );
@@ -104,7 +131,7 @@ export function implementPrompt(args: {
     );
   }
 
-  return { system, user: userParts.join("\n\n") };
+  return { system: systemStr, user: userParts.join("\n\n") };
 }
 
 export function debugPrompt(args: {

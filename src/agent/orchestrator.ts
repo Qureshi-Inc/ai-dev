@@ -164,9 +164,11 @@ async function runIssue(jobId: number): Promise<void> {
     setState(jobId, JobState.PARSING);
     await report(client, jobId);
     const issue = await getIssue(octokit, job.owner, job.repo, job.issueNumber);
-    const pro = issue.labels.includes(config.agent.proLabel);
-    updateJob(jobId, { pro });
-    if (pro) log.info({ proLabel: config.agent.proLabel }, "pro run: using MODEL_PRO for all tasks");
+    const epic = issue.labels.includes(config.agent.epicLabel);
+    const pro = epic || issue.labels.includes(config.agent.proLabel);
+    updateJob(jobId, { pro, epic });
+    if (epic) log.info({ epicLabel: config.agent.epicLabel }, "epic run: per-step commits, pro model, review-merge");
+    else if (pro) log.info({ proLabel: config.agent.proLabel }, "pro run: using MODEL_PRO for all tasks");
     const spec = await parseIssue(jobId, issue.title, issue.body, pro);
     saveSpec(jobId, spec);
     log.info({ requirements: spec.requirements.length }, "issue parsed -> spec");
@@ -174,23 +176,45 @@ async function runIssue(jobId: number): Promise<void> {
     // Plan
     setState(jobId, JobState.PLANNING);
     await report(client, jobId);
-    const steps = await planSpec(jobId, spec, pro);
+    const planned = await planSpec(jobId, spec, pro);
+    const steps = epic ? planned.slice(0, config.agent.epicMaxSteps) : planned;
     savePlan(jobId, steps);
-    log.info({ steps: steps.length }, "plan generated");
+    log.info({ steps: steps.length, epic }, "plan generated");
 
-    // Implement (initial attempt = 0)
+    // Implement step-by-step: one commit per plan step (smaller, more reliable
+    // outputs; a readable history). The CI fix loop later operates holistically.
     setState(jobId, JobState.IMPLEMENTING);
     await report(client, jobId);
     const dir = await ensureRepo(job.owner, job.repo, token);
     await checkoutWorkBranch(dir, branch, base);
-    const { result } = await implementChanges({ jobId, dir, spec, steps, attempt: 0, pro });
 
-    const sha = await commitAll(dir, result.commitMessage);
-    if (!sha) {
-      // The fresh implementation matched what's already on the branch. If a PR
-      // already exists, resume the CI/fix loop against its head (this is how a
-      // re-triggered issue with a red PR enters the debug->fix loop) instead of
-      // dead-ending. Only fail if there's genuinely nothing pushed yet.
+    let summary = "";
+    let committedAny = false;
+    for (let i = 0; i < steps.length; i++) {
+      const { result } = await implementChanges({
+        jobId,
+        dir,
+        spec,
+        steps,
+        stepIndex: i,
+        attempt: 0,
+        pro,
+        epic,
+      });
+      if (result.summary) summary = result.summary;
+      const msg = `ai-dev: step ${i + 1}/${steps.length} — ${steps[i]}`.slice(0, 200);
+      const stepSha = await commitAll(dir, msg);
+      if (stepSha) {
+        committedAny = true;
+        log.info({ step: i + 1, of: steps.length, sha: stepSha }, "step committed");
+      } else {
+        log.info({ step: i + 1, of: steps.length }, "step produced no changes; skipping");
+      }
+    }
+
+    if (!committedAny) {
+      // Nothing changed across all steps. If a PR already exists, resume the CI/fix
+      // loop against its head; otherwise fail.
       if (job.prNumber) {
         const headSha = job.headSha ?? (await currentSha(dir));
         updateJob(jobId, { headSha });
@@ -212,6 +236,7 @@ async function runIssue(jobId: number): Promise<void> {
       await report(client, jobId);
       return;
     }
+    const sha = await currentSha(dir);
     updateJob(jobId, { headSha: sha });
 
     // Push + PR
@@ -220,7 +245,7 @@ async function runIssue(jobId: number): Promise<void> {
       branch,
       base,
       title: `ai-dev: ${spec.title}`,
-      body: prBody(spec, steps, result.summary, job.issueNumber),
+      body: prBody(spec, steps, summary, job.issueNumber),
     });
     updateJob(jobId, { prNumber });
 
@@ -358,6 +383,21 @@ async function processCiOutcome(jobId: number): Promise<void> {
 async function onCiGreen(client: RepoClient, job: IssueJob): Promise<void> {
   const { octokit } = client;
   const log = jobLogger({ jobId: job.id, owner: job.owner, repo: job.repo });
+
+  // Epic runs are left for human review (big change, merge when you're ready).
+  if (job.epic) {
+    await comment(
+      octokit,
+      job.owner,
+      job.repo,
+      job.prNumber ?? job.issueNumber,
+      "ai-dev: all steps implemented and CI is green. This epic is ready for review — merge when you're happy with it.",
+    );
+    setState(job.id, JobState.PR_OPEN);
+    await report(client, job.id);
+    log.info({ prNumber: job.prNumber }, "epic ready for review (no auto-merge)");
+    return;
+  }
 
   if (!config.agent.autoMerge) {
     await comment(

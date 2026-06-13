@@ -13,6 +13,7 @@ interface JobRow {
   state: string;
   retry_count: number;
   pro: number;
+  epic: number;
   last_error: string | null;
   spec: string | null;
   plan: string | null;
@@ -35,6 +36,7 @@ function rowToJob(row: JobRow): IssueJob {
     state: row.state as JobState,
     retryCount: row.retry_count,
     pro: !!row.pro,
+    epic: !!row.epic,
     lastError: row.last_error,
     spec: row.spec,
     plan: row.plan,
@@ -110,6 +112,7 @@ type JobPatch = Partial<{
   lastError: string | null;
   title: string;
   pro: boolean;
+  epic: boolean;
   progressCommentId: number | null;
   progressPrCommentId: number | null;
 }>;
@@ -123,6 +126,7 @@ const COLUMN_MAP: Record<keyof JobPatch, string> = {
   lastError: "last_error",
   title: "title",
   pro: "pro",
+  epic: "epic",
   progressCommentId: "progress_comment_id",
   progressPrCommentId: "progress_pr_comment_id",
 };

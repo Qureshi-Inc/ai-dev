@@ -49,6 +49,7 @@ export interface IssueJob {
   plan: string | null; // JSON string of string[]
   progressCommentId: number | null;
   progressPrCommentId: number | null;
+  epic: boolean;
   createdAt: string;
   updatedAt: string;
 }

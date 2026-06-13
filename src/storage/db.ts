@@ -60,5 +60,8 @@ if (!jobCols.includes("progress_pr_comment_id")) {
 if (!jobCols.includes("pro")) {
   db.exec("ALTER TABLE issue_jobs ADD COLUMN pro INTEGER NOT NULL DEFAULT 0");
 }
+if (!jobCols.includes("epic")) {
+  db.exec("ALTER TABLE issue_jobs ADD COLUMN epic INTEGER NOT NULL DEFAULT 0");
+}
 
 logger.info({ dbPath: config.agent.dbPath }, "sqlite storage ready");
