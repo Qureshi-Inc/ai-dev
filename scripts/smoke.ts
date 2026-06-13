@@ -156,6 +156,46 @@ async function main(): Promise<void> {
   }
   check("path traversal rejected", traversalBlocked);
 
+  // ---- 4b. Implement output parser (regression: @@EDIT without trailing @@END) ----
+  console.log("[parse]");
+  const { parseDelimited } = await import("../src/agent/implement.js");
+  // Aider-style edit block where the model omits @@END (terminated by REPLACE line).
+  const editNoEnd = [
+    "COMMIT: feat: tweak",
+    "SUMMARY: change a line",
+    "@@EDIT index.html",
+    "<<<<<<< SEARCH",
+    "  <title>Old</title>",
+    "=======",
+    "  <title>New</title>",
+    ">>>>>>> REPLACE",
+  ].join("\n");
+  const parsedNoEnd = parseDelimited(editNoEnd);
+  check("parses @@EDIT without trailing @@END", !!parsedNoEnd && parsedNoEnd.files.length === 1);
+  check("edit block -> action 'edit'", parsedNoEnd?.files[0].action === "edit");
+  check("edit search captured", parsedNoEnd?.files[0].search === "  <title>Old</title>");
+  check("edit replace captured", parsedNoEnd?.files[0].replace === "  <title>New</title>");
+  // The same block WITH a trailing @@END must also still parse.
+  const parsedWithEnd = parseDelimited(editNoEnd + "\n@@END\n");
+  check("parses @@EDIT with optional @@END", parsedWithEnd?.files[0].replace === "  <title>New</title>");
+  // Mixed: a full-file @@FILE block followed by an @@EDIT (no @@END) both parse.
+  const mixed = [
+    "COMMIT: c",
+    "@@FILE new.txt create",
+    "hello",
+    "@@END",
+    "@@EDIT a.ts",
+    "<<<<<<< SEARCH",
+    "const x = 1;",
+    "=======",
+    "const x = 2;",
+    ">>>>>>> REPLACE",
+  ].join("\n");
+  const parsedMixed = parseDelimited(mixed);
+  check("mixed @@FILE + @@EDIT both parse", parsedMixed?.files.length === 2);
+  check("mixed: first is create", parsedMixed?.files[0].action === "create");
+  check("mixed: second is edit", parsedMixed?.files[1].action === "edit");
+
   // ---- 5. CI log extractor ----
   console.log("[ci logs]");
   const { extractRelevantLogs } = await import("../src/ci/logs.js");

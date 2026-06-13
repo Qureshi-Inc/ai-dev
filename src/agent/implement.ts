@@ -32,17 +32,19 @@ export interface ImplementOutcome {
  * Parse the sentinel-delimited implement format. Handles two block types in
  * document order:
  *   - @@FILE <path> <create|modify|delete> ... @@END  (full file content)
- *   - @@EDIT <path> with <<<<<<< SEARCH / ======= / >>>>>>> REPLACE ... @@END
+ *   - @@EDIT <path> with <<<<<<< SEARCH / ======= / >>>>>>> REPLACE
+ * An @@EDIT block is terminated by the `>>>>>>> REPLACE` line itself; a trailing
+ * `@@END` is OPTIONAL (models trained on aider-style diffs routinely omit it).
  * Returns null if no blocks of either kind are found.
  */
-function parseDelimited(text: string): ImplementResult | null {
+export function parseDelimited(text: string): ImplementResult | null {
   const blockRe = new RegExp(
     // @@FILE block: groups 1=path, 2=action, 3=content
     "@@FILE[ \\t]+(\\S+)[ \\t]+(create|modify|delete)[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n?@@END" +
       "|" +
-      // @@EDIT block: groups 4=path, 5=search, 6=replace
+      // @@EDIT block: groups 4=path, 5=search, 6=replace. @@END is optional.
       "@@EDIT[ \\t]+(\\S+)[ \\t]*\\r?\\n" +
-      "<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n?=======\\r?\\n([\\s\\S]*?)\\r?\\n?>>>>>>> REPLACE[ \\t]*\\r?\\n?@@END",
+      "<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n?=======\\r?\\n([\\s\\S]*?)\\r?\\n?>>>>>>> REPLACE[ \\t]*(?:\\r?\\n[ \\t]*@@END)?",
     "g",
   );
   const files: FileEdit[] = [];
