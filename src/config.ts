@@ -65,6 +65,12 @@ const RawSchema = z.object({
 
   CI_POLL_INTERVAL_MS: z.coerce.number().int().nonnegative().default(30000),
   CI_WAIT_TIMEOUT_MS: z.coerce.number().int().positive().default(1800000),
+  // If a repo has NO CI run/check for the commit after this grace period, the agent
+  // stops waiting and applies the MERGE_WITHOUT_CI policy.
+  CI_GRACE_MS: z.coerce.number().int().positive().default(90000),
+  // When no CI runs for a commit and the PR is mergeable/clean, auto-merge it
+  // (true) instead of waiting until timeout. Real CI still gates as usual.
+  MERGE_WITHOUT_CI: z.string().optional(),
 
   COOLIFY_DEPLOY_HOOK_URL: z.string().default(""),
 });
@@ -118,6 +124,8 @@ export const config = {
   ci: {
     pollIntervalMs: raw.CI_POLL_INTERVAL_MS,
     waitTimeoutMs: raw.CI_WAIT_TIMEOUT_MS,
+    graceMs: raw.CI_GRACE_MS,
+    mergeWithoutCi: boolFromEnv(raw.MERGE_WITHOUT_CI, true),
   },
 
   coolify: {

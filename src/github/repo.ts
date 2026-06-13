@@ -80,6 +80,24 @@ export async function comment(
   await octokit.rest.issues.createComment({ owner, repo, issue_number: issueOrPrNumber, body });
 }
 
+/**
+ * GitHub's own view of whether a PR can be merged. `mergeable` can be null while
+ * GitHub computes it (treat as not-yet-mergeable). `state` is mergeable_state:
+ * clean / unstable (non-required checks) / has_hooks are safe to merge; dirty /
+ * blocked / behind / draft are not.
+ */
+export async function getPrMergeable(
+  octokit: InstallationOctokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<{ mergeable: boolean; state: string }> {
+  const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  const state = data.mergeable_state ?? "unknown";
+  const mergeable = data.mergeable === true && ["clean", "unstable", "has_hooks"].includes(state);
+  return { mergeable, state };
+}
+
 export interface MergeResult {
   merged: boolean;
   reason?: string;

@@ -41,6 +41,27 @@ async function listRunsForSha(
   return runs;
 }
 
+/**
+ * Whether ANY CI signal exists for a commit: a workflow run OR a check-run.
+ * Used to distinguish "CI is slow" from "this repo has no CI for this commit".
+ */
+export async function hasCiForSha(
+  octokit: InstallationOctokit,
+  owner: string,
+  repo: string,
+  headSha: string,
+): Promise<boolean> {
+  const runs = await octokit.rest.actions.listWorkflowRunsForRepo({
+    owner,
+    repo,
+    head_sha: headSha,
+    per_page: 1,
+  });
+  if ((runs.data.total_count ?? runs.data.workflow_runs?.length ?? 0) > 0) return true;
+  const checks = await octokit.rest.checks.listForRef({ owner, repo, ref: headSha, per_page: 1 });
+  return (checks.data.total_count ?? 0) > 0;
+}
+
 /** Most recent workflow run for a given head SHA, or null if none exists yet. */
 export async function findLatestRunForSha(
   octokit: InstallationOctokit,

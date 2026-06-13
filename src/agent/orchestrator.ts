@@ -23,10 +23,11 @@ import {
   comment,
   getDefaultBranch,
   getIssue,
+  getPrMergeable,
   mergePr,
   openOrUpdatePr,
 } from "../github/repo.js";
-import { buildCiOutcome } from "../github/ci.js";
+import { buildCiOutcome, hasCiForSha } from "../github/ci.js";
 import {
   changedFilesVsBase,
   checkoutWorkBranch,
@@ -130,6 +131,11 @@ export function handleWorkflowConclusion(ev: {
     "workflow completed -> evaluate",
   );
   queue.enqueue(`ci#${job.id}`, () => processCiOutcome(job.id));
+}
+
+/** Ask the orchestrator to (re-)evaluate CI for a job. Used by the poller. */
+export function requestCiEvaluation(jobId: number): void {
+  queue.enqueue(`ci#${jobId}`, () => processCiOutcome(jobId));
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +248,63 @@ async function processCiOutcome(jobId: number): Promise<void> {
 
     const outcome = await buildCiOutcome(octokit, job.owner, job.repo, job.headSha);
     if (!outcome) {
+      const ageMs = Date.now() - new Date(job.updatedAt).getTime();
+
+      // After a grace period, decide whether CI will ever report for this commit.
+      if (ageMs > config.ci.graceMs) {
+        const ci = await hasCiForSha(octokit, job.owner, job.repo, job.headSha);
+        if (!ci) {
+          // No workflow runs and no check-runs for this commit -> the repo has no CI
+          // that runs on it. Apply the no-CI policy.
+          if (config.ci.mergeWithoutCi && config.agent.autoMerge && job.prNumber) {
+            const m = await getPrMergeable(octokit, job.owner, job.repo, job.prNumber);
+            if (m.mergeable) {
+              log.info({ prNumber: job.prNumber, state: m.state }, "no CI for commit; PR mergeable -> auto-merging");
+              await onCiGreen(client, job);
+              return;
+            }
+            await comment(
+              octokit,
+              job.owner,
+              job.repo,
+              job.prNumber,
+              `ai-dev: no CI runs for this commit and GitHub reports the PR not mergeable (state: ${m.state}). Stopping.`,
+            );
+            updateJob(jobId, { lastError: `no CI; PR not mergeable: ${m.state}` });
+            setState(jobId, JobState.FAILED);
+            await report(client, jobId);
+            return;
+          }
+          // Policy off (or auto-merge disabled): don't sit until timeout — surface it.
+          await comment(
+            octokit,
+            job.owner,
+            job.repo,
+            job.prNumber ?? job.issueNumber,
+            "ai-dev: no CI is configured to run on this commit. Add a CI workflow or merge manually.",
+          );
+          setState(jobId, job.prNumber ? JobState.PR_OPEN : JobState.FAILED);
+          await report(client, jobId);
+          return;
+        }
+        // CI exists but hasn't completed yet -> fall through to the wait/timeout check.
+      }
+
+      if (ageMs > config.ci.waitTimeoutMs) {
+        log.warn({ ageMs }, "CI wait timeout exceeded");
+        await comment(
+          octokit,
+          job.owner,
+          job.repo,
+          job.prNumber ?? job.issueNumber,
+          "ai-dev: timed out waiting for CI to complete. Stopping.",
+        );
+        updateJob(jobId, { lastError: "CI wait timeout exceeded" });
+        setState(jobId, JobState.FAILED);
+        await report(client, jobId);
+        return;
+      }
+
       log.info("CI still in progress; will re-check on next event");
       return;
     }
