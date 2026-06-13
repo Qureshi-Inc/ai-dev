@@ -45,26 +45,54 @@ import { reportProgress } from "./progress.js";
 import { queue } from "../queue/queue.js";
 import { jobLogger, logger } from "../utils/logger.js";
 
-/** Best-effort live status comment update; never throws. */
-async function report(client: RepoClient | null, jobId: number): Promise<void> {
-  if (client) await reportProgress(client.octokit, jobId);
+/** Best-effort live status update; never throws. `detail` is an optional activity note. */
+async function report(client: RepoClient | null, jobId: number, detail?: string): Promise<void> {
+  if (client) await reportProgress(client.octokit, jobId, detail);
 }
 
 function branchName(issueNumber: number): string {
   return `${config.agent.branchPrefix}${issueNumber}`;
 }
 
-function prBody(spec: IssueSpec, steps: string[], summary: string, issueNumber: number): string {
-  return [
-    `Automated changes by **ai-dev** for #${issueNumber}.`,
+function prBody(
+  spec: IssueSpec,
+  steps: string[],
+  summary: string,
+  issueNumber: number,
+  opts: { epic?: boolean; pro?: boolean } = {},
+): string {
+  const badges: string[] = [];
+  if (opts.epic) badges.push("`epic`");
+  if (opts.pro) badges.push("`pro`");
+  const codeModel = opts.pro ? config.llm.modelPro : config.llm.modelCode;
+
+  const lines = [
+    `> Automated by **ai-dev** for #${issueNumber}${badges.length ? ` — ${badges.join(" · ")}` : ""}`,
     "",
-    `**Summary:** ${summary || spec.summary}`,
+    "## Summary",
+    summary || spec.summary,
     "",
-    "**Plan:**",
-    ...steps.map((s, i) => `${i + 1}. ${s}`),
+    "## Plan",
+    ...steps.map((s) => `- [x] ${s}`),
     "",
-    `Closes #${issueNumber}`,
-  ].join("\n");
+    "## How this was built",
+    `- **Code model:** \`${codeModel}\``,
+    `- **Debug model:** \`${config.llm.modelDebug}\` (used on CI failures)`,
+    "- One commit per plan step; CI-driven self-healing on failures.",
+  ];
+
+  if (opts.epic) {
+    lines.push(
+      "",
+      "## Review notes",
+      "This is an **epic**: new behavior is gated behind a feature flag (off by default), so",
+      "it is safe to merge incrementally. Review the commits step-by-step and flip the flag",
+      "when you're ready to enable it.",
+    );
+  }
+
+  lines.push("", `Closes #${issueNumber}`);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +219,7 @@ async function runIssue(jobId: number): Promise<void> {
     let summary = "";
     let committedAny = false;
     for (let i = 0; i < steps.length; i++) {
+      await report(client, jobId, `step ${i + 1}/${steps.length} — ${steps[i]}`);
       const { result } = await implementChanges({
         jobId,
         dir,
@@ -245,7 +274,7 @@ async function runIssue(jobId: number): Promise<void> {
       branch,
       base,
       title: `ai-dev: ${spec.title}`,
-      body: prBody(spec, steps, summary, job.issueNumber),
+      body: prBody(spec, steps, summary, job.issueNumber, { epic, pro }),
     });
     updateJob(jobId, { prNumber });
 
