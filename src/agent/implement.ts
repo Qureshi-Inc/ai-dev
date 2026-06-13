@@ -14,8 +14,10 @@ const ImplementSchema = z.object({
     .array(
       z.object({
         path: z.string(),
-        action: z.enum(["create", "modify", "delete"]).default("modify"),
+        action: z.enum(["create", "modify", "delete", "edit"]).default("modify"),
         content: z.string().default(""),
+        search: z.string().optional(),
+        replace: z.string().optional(),
       }),
     )
     .default([]),
@@ -26,18 +28,32 @@ export interface ImplementOutcome {
   applied: AppliedEdit[];
 }
 
-/** Parse the sentinel-delimited implement format. Returns null if no @@FILE blocks found. */
+/**
+ * Parse the sentinel-delimited implement format. Handles two block types in
+ * document order:
+ *   - @@FILE <path> <create|modify|delete> ... @@END  (full file content)
+ *   - @@EDIT <path> with <<<<<<< SEARCH / ======= / >>>>>>> REPLACE ... @@END
+ * Returns null if no blocks of either kind are found.
+ */
 function parseDelimited(text: string): ImplementResult | null {
-  const blockRe =
-    /@@FILE[ \t]+(\S+)[ \t]+(create|modify|delete)[ \t]*\r?\n([\s\S]*?)\r?\n?@@END/g;
+  const blockRe = new RegExp(
+    // @@FILE block: groups 1=path, 2=action, 3=content
+    "@@FILE[ \\t]+(\\S+)[ \\t]+(create|modify|delete)[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n?@@END" +
+      "|" +
+      // @@EDIT block: groups 4=path, 5=search, 6=replace
+      "@@EDIT[ \\t]+(\\S+)[ \\t]*\\r?\\n" +
+      "<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n?=======\\r?\\n([\\s\\S]*?)\\r?\\n?>>>>>>> REPLACE[ \\t]*\\r?\\n?@@END",
+    "g",
+  );
   const files: FileEdit[] = [];
   let m: RegExpExecArray | null;
   while ((m = blockRe.exec(text)) !== null) {
-    files.push({
-      path: m[1],
-      action: m[2] as FileEdit["action"],
-      content: m[2] === "delete" ? "" : m[3],
-    });
+    if (m[1] !== undefined) {
+      const action = m[2] as FileEdit["action"];
+      files.push({ path: m[1], action, content: action === "delete" ? "" : m[3] });
+    } else if (m[4] !== undefined) {
+      files.push({ path: m[4], action: "edit", content: "", search: m[5], replace: m[6] });
+    }
   }
   if (files.length === 0) return null;
 

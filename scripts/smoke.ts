@@ -128,6 +128,24 @@ async function main(): Promise<void> {
   check("create writes file", readFileSync(join(repoDir, "src/hello.ts"), "utf8").includes("hi"));
   applyEdits(repoDir, [{ path: "src/hello.ts", action: "modify", content: "export const hi = () => 'bye';\n" }]);
   check("modify updates file", readFileSync(join(repoDir, "src/hello.ts"), "utf8").includes("bye"));
+  // Surgical edit: exact SEARCH/REPLACE on existing content.
+  applyEdits(repoDir, [
+    { path: "src/hello.ts", action: "edit", content: "", search: "'bye'", replace: "'ciao'" },
+  ]);
+  check("edit exact match applies", readFileSync(join(repoDir, "src/hello.ts"), "utf8").includes("ciao"));
+  // Whitespace-tolerant edit: SEARCH differs only by leading indentation.
+  applyEdits(repoDir, [
+    { path: "src/hello.ts", action: "edit", content: "", search: "  export const hi = () => 'ciao';", replace: "export const hi = () => 'hola';" },
+  ]);
+  check("edit whitespace-tolerant match applies", readFileSync(join(repoDir, "src/hello.ts"), "utf8").includes("hola"));
+  // A SEARCH that does not exist must throw loudly.
+  let editNotFound = false;
+  try {
+    applyEdits(repoDir, [{ path: "src/hello.ts", action: "edit", content: "", search: "NOT_PRESENT_ANYWHERE", replace: "x" }]);
+  } catch {
+    editNotFound = true;
+  }
+  check("edit missing SEARCH throws", editNotFound);
   applyEdits(repoDir, [{ path: "README.md", action: "delete", content: "" }]);
   check("delete removes file", !existsSync(join(repoDir, "README.md")));
   let traversalBlocked = false;

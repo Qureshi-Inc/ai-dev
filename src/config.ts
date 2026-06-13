@@ -40,7 +40,7 @@ const RawSchema = z.object({
   // Coding tasks escalate to MODEL_PRO once attempt >= this value (0 = initial try).
   ESCALATE_AFTER_RETRIES: z.coerce.number().int().nonnegative().default(1),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(600000),
-  LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8192),
+  LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(16384),
   // LM Studio JIT auto-unload TTL (seconds). The idle model unloads after this,
   // so qwen and deepseek are not both resident at once. 0 disables sending ttl.
   LLM_TTL_SECONDS: z.coerce.number().int().nonnegative().default(900),

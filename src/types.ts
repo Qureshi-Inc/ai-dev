@@ -69,8 +69,13 @@ export interface IssueSpec {
 /** A single file mutation proposed by the code model. */
 export interface FileEdit {
   path: string;
-  action: "create" | "modify" | "delete";
+  action: "create" | "modify" | "delete" | "edit";
+  /** Full file content for create/modify/delete (delete = ""). Unused for "edit". */
   content: string;
+  /** For action "edit": exact existing text to find. */
+  search?: string;
+  /** For action "edit": replacement text. */
+  replace?: string;
 }
 
 export interface ImplementResult {
