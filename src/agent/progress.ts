@@ -63,8 +63,52 @@ function buildBody(job: IssueJob): string {
 }
 
 /**
- * Create or update the single live status comment on the issue. Best-effort:
- * never throws, so progress reporting can't break the job.
+ * Create or update a single status comment on the given issue/PR number.
+ * Returns the (possibly new) comment id, or null on failure. A PR is an issue
+ * in GitHub's API, so the same calls work for both.
+ */
+async function upsertComment(
+  octokit: InstallationOctokit,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  commentId: number | null,
+  body: string,
+): Promise<number | null> {
+  try {
+    if (commentId) {
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
+      return commentId;
+    }
+    const { data } = await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      body,
+    });
+    return data.id;
+  } catch {
+    // If the stored comment was deleted, try creating a fresh one once.
+    if (commentId) {
+      try {
+        const { data } = await octokit.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: issueNumber,
+          body,
+        });
+        return data.id;
+      } catch {
+        /* fall through */
+      }
+    }
+    return null;
+  }
+}
+
+/**
+ * Update the live status comment on the issue AND (once it exists) the PR.
+ * Best-effort: never throws, so progress reporting can't break the job.
  */
 export async function reportProgress(octokit: InstallationOctokit, jobId: number): Promise<void> {
   const job = getJobById(jobId);
@@ -72,38 +116,32 @@ export async function reportProgress(octokit: InstallationOctokit, jobId: number
   const body = buildBody(job);
 
   try {
-    if (job.progressCommentId) {
-      await octokit.rest.issues.updateComment({
-        owner: job.owner,
-        repo: job.repo,
-        comment_id: job.progressCommentId,
-        body,
-      });
-      return;
-    }
-    const { data } = await octokit.rest.issues.createComment({
-      owner: job.owner,
-      repo: job.repo,
-      issue_number: job.issueNumber,
+    const issueCommentId = await upsertComment(
+      octokit,
+      job.owner,
+      job.repo,
+      job.issueNumber,
+      job.progressCommentId,
       body,
-    });
-    updateJob(jobId, { progressCommentId: data.id });
-  } catch (err) {
-    // If the stored comment was deleted, try creating a fresh one once.
-    if (job.progressCommentId) {
-      try {
-        const { data } = await octokit.rest.issues.createComment({
-          owner: job.owner,
-          repo: job.repo,
-          issue_number: job.issueNumber,
-          body,
-        });
-        updateJob(jobId, { progressCommentId: data.id });
-        return;
-      } catch {
-        /* fall through to log */
+    );
+    if (issueCommentId && issueCommentId !== job.progressCommentId) {
+      updateJob(jobId, { progressCommentId: issueCommentId });
+    }
+
+    if (job.prNumber && job.prNumber !== job.issueNumber) {
+      const prCommentId = await upsertComment(
+        octokit,
+        job.owner,
+        job.repo,
+        job.prNumber,
+        job.progressPrCommentId,
+        body,
+      );
+      if (prCommentId && prCommentId !== job.progressPrCommentId) {
+        updateJob(jobId, { progressPrCommentId: prCommentId });
       }
     }
+  } catch (err) {
     logger.warn({ jobId, err: (err as Error).message }, "progress update failed (non-fatal)");
   }
 }

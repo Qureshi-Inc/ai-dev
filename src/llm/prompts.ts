@@ -79,6 +79,8 @@ export function implementPrompt(args: {
     "- Do NOT use markdown code fences anywhere in your response.",
     "- Only include files you actually change. Keep changes minimal and focused on the spec.",
     "- Ensure the project still builds and tests can run. Prefer editing existing files over duplicates.",
+    "- Produce complete, standards-valid files. Any HTML document MUST begin with",
+    "  `<!DOCTYPE html>` as its very first line, before <html>.",
     "- The ORIGINAL ISSUE below is the source of truth for required CONTENT and facts.",
     "  Include all specific details it states (proper nouns, names, exact section content,",
     "  values) VERBATIM. Do not genericize, summarize away, or invent placeholder content.",

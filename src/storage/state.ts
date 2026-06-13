@@ -16,6 +16,7 @@ interface JobRow {
   spec: string | null;
   plan: string | null;
   progress_comment_id: number | null;
+  progress_pr_comment_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -36,6 +37,7 @@ function rowToJob(row: JobRow): IssueJob {
     spec: row.spec,
     plan: row.plan,
     progressCommentId: row.progress_comment_id,
+    progressPrCommentId: row.progress_pr_comment_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -106,6 +108,7 @@ type JobPatch = Partial<{
   lastError: string | null;
   title: string;
   progressCommentId: number | null;
+  progressPrCommentId: number | null;
 }>;
 
 const COLUMN_MAP: Record<keyof JobPatch, string> = {
@@ -117,6 +120,7 @@ const COLUMN_MAP: Record<keyof JobPatch, string> = {
   lastError: "last_error",
   title: "title",
   progressCommentId: "progress_comment_id",
+  progressPrCommentId: "progress_pr_comment_id",
 };
 
 export function updateJob(id: number, patch: JobPatch): IssueJob {

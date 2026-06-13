@@ -47,6 +47,7 @@ export interface IssueJob {
   spec: string | null; // JSON string of IssueSpec
   plan: string | null; // JSON string of string[]
   progressCommentId: number | null;
+  progressPrCommentId: number | null;
   createdAt: string;
   updatedAt: string;
 }

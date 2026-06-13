@@ -54,5 +54,8 @@ const jobCols = (db.prepare("PRAGMA table_info(issue_jobs)").all() as Array<{ na
 if (!jobCols.includes("progress_comment_id")) {
   db.exec("ALTER TABLE issue_jobs ADD COLUMN progress_comment_id INTEGER");
 }
+if (!jobCols.includes("progress_pr_comment_id")) {
+  db.exec("ALTER TABLE issue_jobs ADD COLUMN progress_pr_comment_id INTEGER");
+}
 
 logger.info({ dbPath: config.agent.dbPath }, "sqlite storage ready");
