@@ -35,6 +35,8 @@ process.env.CI_POLL_INTERVAL_MS = "0";
 process.env.LOG_LEVEL = "warn";
 process.env.LOG_PRETTY = "false";
 process.env.PORT = String(PORT);
+process.env.PRO_LABEL = "ai-dev-pro";
+process.env.ESCALATE_AFTER_RETRIES = "1";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -63,6 +65,11 @@ async function main(): Promise<void> {
   check("IMPLEMENT -> code model", routeModel(TaskType.IMPLEMENT) === config.llm.modelCode);
   check("PLAN -> code model", routeModel(TaskType.PLAN) === config.llm.modelCode);
   check("CI_ANALYSIS -> debug model", routeModel(TaskType.CI_ANALYSIS) === config.llm.modelDebug);
+  check("IMPLEMENT attempt 0 -> code model", routeModel(TaskType.IMPLEMENT, { attempt: 0 }) === config.llm.modelCode);
+  check("IMPLEMENT attempt 1 -> pro model (escalation)", routeModel(TaskType.IMPLEMENT, { attempt: 1 }) === config.llm.modelPro);
+  check("PARSE pro -> pro model", routeModel(TaskType.PARSE, { pro: true }) === config.llm.modelPro);
+  check("CI_ANALYSIS pro -> pro model", routeModel(TaskType.CI_ANALYSIS, { pro: true }) === config.llm.modelPro);
+  check("CI_ANALYSIS attempt 3 (not pro) -> debug model", routeModel(TaskType.CI_ANALYSIS, { attempt: 3 }) === config.llm.modelDebug);
   check("DEBUG -> debug model", routeModel(TaskType.DEBUG) === config.llm.modelDebug);
   check("allowlist permits octo/demo", isRepoAllowed("octo", "demo"));
   check("allowlist denies other/repo", !isRepoAllowed("other", "repo"));

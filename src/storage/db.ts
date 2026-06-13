@@ -57,5 +57,8 @@ if (!jobCols.includes("progress_comment_id")) {
 if (!jobCols.includes("progress_pr_comment_id")) {
   db.exec("ALTER TABLE issue_jobs ADD COLUMN progress_pr_comment_id INTEGER");
 }
+if (!jobCols.includes("pro")) {
+  db.exec("ALTER TABLE issue_jobs ADD COLUMN pro INTEGER NOT NULL DEFAULT 0");
+}
 
 logger.info({ dbPath: config.agent.dbPath }, "sqlite storage ready");

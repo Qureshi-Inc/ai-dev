@@ -21,6 +21,9 @@ export interface CallOptions {
   jobId?: number | null;
   temperature?: number;
   maxTokens?: number;
+  /** Routing context: attempt number (for escalation) and pro flag. */
+  attempt?: number;
+  pro?: boolean;
 }
 
 export interface CallResult {
@@ -66,11 +69,18 @@ export function extractJson<T = unknown>(text: string): T {
 
 /** Invoke the model selected for `task`, logging the full call for observability. */
 export async function callModel(task: TaskType, opts: CallOptions): Promise<CallResult> {
-  const model = routeModel(task);
+  const model = routeModel(task, { attempt: opts.attempt, pro: opts.pro });
   const startedAt = Date.now();
 
   logger.info(
-    { task, model, jobId: opts.jobId ?? null, json: opts.json ?? false },
+    {
+      task,
+      model,
+      jobId: opts.jobId ?? null,
+      json: opts.json ?? false,
+      attempt: opts.attempt ?? 0,
+      pro: opts.pro ?? false,
+    },
     "llm call -> dispatch",
   );
   logger.debug({ task, model, system: opts.system, user: opts.user }, "llm prompt");
@@ -101,6 +111,18 @@ export async function callModel(task: TaskType, opts: CallOptions): Promise<Call
 
   const latencyMs = Date.now() - startedAt;
   const text = completion.choices[0]?.message?.content ?? "";
+
+  // Model-mismatch guard: LM Studio (esp. with JIT off) can silently serve the
+  // currently-loaded model for any requested id. Warn loudly if the server
+  // answered as a different model than we routed to. Don't throw (id formatting
+  // can differ harmlessly).
+  const served = completion.model ?? "";
+  if (served && served.trim().toLowerCase() !== model.trim().toLowerCase()) {
+    logger.warn(
+      { task, requested: model, served, jobId: opts.jobId ?? null },
+      "model mismatch: requested model differs from server response (is the model downloaded / JIT on?)",
+    );
+  }
 
   logModelCall({
     jobId: opts.jobId ?? null,

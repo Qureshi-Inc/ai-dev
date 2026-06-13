@@ -158,23 +158,26 @@ async function runIssue(jobId: number): Promise<void> {
     setState(jobId, JobState.PARSING);
     await report(client, jobId);
     const issue = await getIssue(octokit, job.owner, job.repo, job.issueNumber);
-    const spec = await parseIssue(jobId, issue.title, issue.body);
+    const pro = issue.labels.includes(config.agent.proLabel);
+    updateJob(jobId, { pro });
+    if (pro) log.info({ proLabel: config.agent.proLabel }, "pro run: using MODEL_PRO for all tasks");
+    const spec = await parseIssue(jobId, issue.title, issue.body, pro);
     saveSpec(jobId, spec);
     log.info({ requirements: spec.requirements.length }, "issue parsed -> spec");
 
     // Plan
     setState(jobId, JobState.PLANNING);
     await report(client, jobId);
-    const steps = await planSpec(jobId, spec);
+    const steps = await planSpec(jobId, spec, pro);
     savePlan(jobId, steps);
     log.info({ steps: steps.length }, "plan generated");
 
-    // Implement
+    // Implement (initial attempt = 0)
     setState(jobId, JobState.IMPLEMENTING);
     await report(client, jobId);
     const dir = await ensureRepo(job.owner, job.repo, token);
     await checkoutWorkBranch(dir, branch, base);
-    const { result } = await implementChanges({ jobId, dir, spec, steps });
+    const { result } = await implementChanges({ jobId, dir, spec, steps, attempt: 0, pro });
 
     const sha = await commitAll(dir, result.commitMessage);
     if (!sha) {
@@ -353,6 +356,7 @@ async function fixAndRetry(client: RepoClient, job: IssueJob, logsExcerpt: strin
     spec,
     logsExcerpt,
     changedFiles: changed,
+    pro: job.pro,
   });
   await comment(
     octokit,
@@ -370,6 +374,9 @@ async function fixAndRetry(client: RepoClient, job: IssueJob, logsExcerpt: strin
     steps,
     fixInstructions: analysis.fixInstructions,
     extraContextFiles: [...new Set([...analysis.suspectedFiles, ...changed])],
+    // This fix is attempt (retryCount + 1); coding escalates to MODEL_PRO per the router.
+    attempt: job.retryCount + 1,
+    pro: job.pro,
   });
 
   const sha = await commitAll(dir, result.commitMessage || "ai-dev: apply CI fix");

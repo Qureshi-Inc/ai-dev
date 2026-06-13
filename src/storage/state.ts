@@ -12,6 +12,7 @@ interface JobRow {
   head_sha: string | null;
   state: string;
   retry_count: number;
+  pro: number;
   last_error: string | null;
   spec: string | null;
   plan: string | null;
@@ -33,6 +34,7 @@ function rowToJob(row: JobRow): IssueJob {
     headSha: row.head_sha,
     state: row.state as JobState,
     retryCount: row.retry_count,
+    pro: !!row.pro,
     lastError: row.last_error,
     spec: row.spec,
     plan: row.plan,
@@ -107,6 +109,7 @@ type JobPatch = Partial<{
   retryCount: number;
   lastError: string | null;
   title: string;
+  pro: boolean;
   progressCommentId: number | null;
   progressPrCommentId: number | null;
 }>;
@@ -119,6 +122,7 @@ const COLUMN_MAP: Record<keyof JobPatch, string> = {
   retryCount: "retry_count",
   lastError: "last_error",
   title: "title",
+  pro: "pro",
   progressCommentId: "progress_comment_id",
   progressPrCommentId: "progress_pr_comment_id",
 };
@@ -127,7 +131,11 @@ export function updateJob(id: number, patch: JobPatch): IssueJob {
   const keys = Object.keys(patch) as (keyof JobPatch)[];
   if (keys.length > 0) {
     const sets = keys.map((k) => `${COLUMN_MAP[k]} = ?`);
-    const values = keys.map((k) => patch[k] as unknown);
+    // better-sqlite3 can't bind booleans; store them as 1/0.
+    const values = keys.map((k) => {
+      const v = patch[k];
+      return typeof v === "boolean" ? (v ? 1 : 0) : (v as unknown);
+    });
     sets.push("updated_at = ?");
     values.push(now());
     values.push(id);

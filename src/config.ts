@@ -34,6 +34,11 @@ const RawSchema = z.object({
   LMSTUDIO_API_KEY: z.string().default("lm-studio"),
   MODEL_CODE: z.string().default("qwen3-coder-30b-a3b-instruct"),
   MODEL_DEBUG: z.string().default("deepseek-coder-v2-lite-instruct"),
+  // "Pro" model: used for everything on ai-dev-pro issues, and for coding fixes
+  // after escalation (a failed CI attempt).
+  MODEL_PRO: z.string().default("qwen/qwen3.6-35b-a3b"),
+  // Coding tasks escalate to MODEL_PRO once attempt >= this value (0 = initial try).
+  ESCALATE_AFTER_RETRIES: z.coerce.number().int().nonnegative().default(1),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(600000),
   LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8192),
   // LM Studio JIT auto-unload TTL (seconds). The idle model unloads after this,
@@ -46,6 +51,8 @@ const RawSchema = z.object({
   DB_PATH: z.string().default("/home/opti3/services/ai-dev/data/agent.db"),
   REPO_ALLOWLIST: z.string().default(""),
   TRIGGER_LABEL: z.string().default("ai-dev"),
+  // Label that both triggers the agent AND forces the "pro" model for the whole run.
+  PRO_LABEL: z.string().default("ai-dev-pro"),
   // Comma-separated GitHub logins allowed to trigger the agent. Empty = anyone.
   TRIGGER_USERS: z.string().default(""),
   MAX_RETRIES: z.coerce.number().int().nonnegative().default(5),
@@ -80,6 +87,8 @@ export const config = {
     apiKey: raw.LMSTUDIO_API_KEY,
     modelCode: raw.MODEL_CODE,
     modelDebug: raw.MODEL_DEBUG,
+    modelPro: raw.MODEL_PRO,
+    escalateAfterRetries: raw.ESCALATE_AFTER_RETRIES,
     timeoutMs: raw.LLM_TIMEOUT_MS,
     maxOutputTokens: raw.LLM_MAX_OUTPUT_TOKENS,
     ttlSeconds: raw.LLM_TTL_SECONDS,
@@ -94,6 +103,7 @@ export const config = {
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
     triggerLabel: raw.TRIGGER_LABEL.trim(),
+    proLabel: raw.PRO_LABEL.trim(),
     triggerUsers: raw.TRIGGER_USERS.split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),

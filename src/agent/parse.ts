@@ -17,12 +17,14 @@ export async function parseIssue(
   jobId: number,
   title: string,
   body: string,
+  pro = false,
 ): Promise<IssueSpec> {
   const prompt = parseIssuePrompt(title, body);
   const raw = await callModelJson<unknown>(TaskType.PARSE, {
     system: prompt.system,
     user: prompt.user,
     jobId,
+    pro,
   });
   const parsed = SpecSchema.parse(raw);
   return {

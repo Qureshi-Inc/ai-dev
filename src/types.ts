@@ -43,6 +43,7 @@ export interface IssueJob {
   headSha: string | null;
   state: JobState;
   retryCount: number;
+  pro: boolean;
   lastError: string | null;
   spec: string | null; // JSON string of IssueSpec
   plan: string | null; // JSON string of string[]

@@ -18,9 +18,10 @@ export function registerWebhooks(): void {
       logger.warn({ owner, repo }, "ignoring issue: repo not in allowlist");
       return;
     }
-    if (config.agent.triggerLabel) {
+    const triggerLabels = [config.agent.triggerLabel, config.agent.proLabel].filter(Boolean);
+    if (triggerLabels.length > 0) {
       const labels = (issue.labels ?? []).map((l) => (typeof l === "string" ? l : (l.name ?? "")));
-      if (!labels.includes(config.agent.triggerLabel)) {
+      if (!labels.some((l) => triggerLabels.includes(l))) {
         logger.info({ owner, repo, issue: issue.number }, "ignoring issue: missing trigger label");
         return;
       }
@@ -46,10 +47,11 @@ export function registerWebhooks(): void {
     );
   });
 
-  // Allow triggering after creation by applying the trigger label.
+  // Allow triggering after creation by applying a trigger label (ai-dev or ai-dev-pro).
   app.webhooks.on("issues.labeled", async ({ payload }) => {
-    if (!config.agent.triggerLabel) return;
-    if (payload.label?.name !== config.agent.triggerLabel) return;
+    const triggerLabels = [config.agent.triggerLabel, config.agent.proLabel].filter(Boolean);
+    if (triggerLabels.length === 0) return;
+    if (!payload.label?.name || !triggerLabels.includes(payload.label.name)) return;
     maybeSubmit(
       payload.repository.owner.login,
       payload.repository.name,
@@ -77,7 +79,7 @@ export function registerWebhooks(): void {
 
   logger.info(
     {
-      triggerLabel: config.agent.triggerLabel || "(any)",
+      triggerLabels: [config.agent.triggerLabel, config.agent.proLabel].filter(Boolean),
       triggerUsers: config.agent.triggerUsers.length > 0 ? config.agent.triggerUsers : "(anyone)",
     },
     "github webhooks registered (issues.opened, issues.labeled, workflow_run.completed)",

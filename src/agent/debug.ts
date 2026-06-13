@@ -24,6 +24,7 @@ export async function analyzeFailure(args: {
   spec: IssueSpec;
   logsExcerpt: string;
   changedFiles: string[];
+  pro?: boolean;
 }): Promise<DebugResult> {
   const tree = await fileTree(args.dir, 200);
   const changedFiles: RepoFileContext[] = [];
@@ -43,6 +44,7 @@ export async function analyzeFailure(args: {
     system: prompt.system,
     user: prompt.user,
     jobId: args.jobId,
+    pro: args.pro,
   });
 
   const parsed = DebugSchema.parse(raw);

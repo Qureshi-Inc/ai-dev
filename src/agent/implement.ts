@@ -72,6 +72,8 @@ export async function implementChanges(args: {
   steps: string[];
   fixInstructions?: string;
   extraContextFiles?: string[];
+  attempt?: number;
+  pro?: boolean;
 }): Promise<ImplementOutcome> {
   const tree = await fileTree(args.dir);
   const files = await selectContextFiles(args.dir, args.spec, args.extraContextFiles ?? []);
@@ -88,6 +90,8 @@ export async function implementChanges(args: {
     system: prompt.system,
     user: prompt.user,
     jobId: args.jobId,
+    attempt: args.attempt,
+    pro: args.pro,
   });
 
   const result = parseDelimited(response.text) ?? parseJsonFallback(response.text);
