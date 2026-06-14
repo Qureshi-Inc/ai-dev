@@ -96,6 +96,8 @@ export async function implementChanges(args: {
   stepIndex?: number;
   /** Epic mode: instruct feature-flagging of new behavior. */
   epic?: boolean;
+  /** Retry mode: forbid @@EDIT, require full-file @@FILE ... modify rewrites. */
+  forceFullFile?: boolean;
 }): Promise<ImplementOutcome> {
   const tree = await fileTree(args.dir);
   const files = await selectContextFiles(args.dir, args.spec, args.extraContextFiles ?? []);
@@ -108,6 +110,7 @@ export async function implementChanges(args: {
     fixInstructions: args.fixInstructions,
     stepIndex: args.stepIndex,
     epic: args.epic,
+    forceFullFile: args.forceFullFile,
   });
 
   const response = await callModel(TaskType.IMPLEMENT, {

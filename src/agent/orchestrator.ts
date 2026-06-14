@@ -33,12 +33,13 @@ import {
   checkoutWorkBranch,
   commitAll,
   currentSha,
+  discardChanges,
   ensureRepo,
   pushBranch,
 } from "../utils/git.js";
 import { parseIssue } from "./parse.js";
 import { planSpec } from "./plan.js";
-import { implementChanges } from "./implement.js";
+import { implementChanges, type ImplementOutcome } from "./implement.js";
 import { analyzeFailure } from "./debug.js";
 import { triggerDeployHook } from "./deploy.js";
 import { reportProgress } from "./progress.js";
@@ -59,12 +60,13 @@ function prBody(
   steps: string[],
   summary: string,
   issueNumber: number,
-  opts: { epic?: boolean; pro?: boolean } = {},
+  opts: { epic?: boolean; pro?: boolean; skipped?: string[] } = {},
 ): string {
   const badges: string[] = [];
   if (opts.epic) badges.push("`epic`");
   if (opts.pro) badges.push("`pro`");
   const codeModel = opts.pro ? config.llm.modelPro : config.llm.modelCode;
+  const skipped = opts.skipped ?? [];
 
   const lines = [
     `> Automated by **ai-dev** for #${issueNumber}${badges.length ? ` — ${badges.join(" · ")}` : ""}`,
@@ -80,6 +82,16 @@ function prBody(
     `- **Debug model:** \`${config.llm.modelDebug}\` (used on CI failures)`,
     "- One commit per plan step; CI-driven self-healing on failures.",
   ];
+
+  if (skipped.length > 0) {
+    lines.push(
+      "",
+      "## ⚠️ Steps not applied automatically",
+      "These plan steps could not be applied (the model's edit didn't match the file even",
+      "after a full-file retry) and were skipped. Please finish them manually:",
+      ...skipped.map((s) => `- [ ] ${s}`),
+    );
+  }
 
   if (opts.epic) {
     lines.push(
@@ -218,19 +230,48 @@ async function runIssue(jobId: number): Promise<void> {
 
     let summary = "";
     let committedAny = false;
+    const skippedSteps: string[] = [];
     for (let i = 0; i < steps.length; i++) {
       await report(client, jobId, `step ${i + 1}/${steps.length} — ${steps[i]}`);
-      const { result } = await implementChanges({
-        jobId,
-        dir,
-        spec,
-        steps,
-        stepIndex: i,
-        attempt: 0,
-        pro,
-        epic,
-      });
-      if (result.summary) summary = result.summary;
+
+      // A single step must not be able to nuke the whole epic. Try the step; if
+      // applying fails (e.g. an @@EDIT SEARCH anchor didn't match the file, or a
+      // parse error), retry it ONCE in full-file mode (forces @@FILE rewrites).
+      // If it still fails, discard the partial change, record the step as skipped,
+      // and continue — partial progress (the steps that did apply) is still shipped.
+      let outcome: ImplementOutcome | null = null;
+      for (let attempt = 0; attempt < 2 && !outcome; attempt++) {
+        try {
+          outcome = await implementChanges({
+            jobId,
+            dir,
+            spec,
+            steps,
+            stepIndex: i,
+            attempt: 0,
+            pro,
+            epic,
+            forceFullFile: attempt > 0,
+          });
+        } catch (stepErr) {
+          const m = stepErr instanceof Error ? stepErr.message : String(stepErr);
+          // Drop any partial writes from the failed attempt so they can't leak
+          // into a later step's commit.
+          await discardChanges(dir).catch(() => {});
+          if (attempt === 0) {
+            log.warn({ step: i + 1, of: steps.length, err: m }, "step failed; retrying in full-file mode");
+          } else {
+            log.warn({ step: i + 1, of: steps.length, err: m }, "step failed twice; skipping");
+          }
+        }
+      }
+
+      if (!outcome) {
+        skippedSteps.push(`${i + 1}. ${steps[i]}`);
+        continue;
+      }
+
+      if (outcome.result.summary) summary = outcome.result.summary;
       const msg = `ai-dev: step ${i + 1}/${steps.length} — ${steps[i]}`.slice(0, 200);
       const stepSha = await commitAll(dir, msg);
       if (stepSha) {
@@ -239,6 +280,10 @@ async function runIssue(jobId: number): Promise<void> {
       } else {
         log.info({ step: i + 1, of: steps.length }, "step produced no changes; skipping");
       }
+    }
+
+    if (skippedSteps.length > 0) {
+      log.warn({ skipped: skippedSteps.length }, "some steps could not be applied automatically");
     }
 
     if (!committedAny) {
@@ -274,9 +319,21 @@ async function runIssue(jobId: number): Promise<void> {
       branch,
       base,
       title: `ai-dev: ${spec.title}`,
-      body: prBody(spec, steps, summary, job.issueNumber, { epic, pro }),
+      body: prBody(spec, steps, summary, job.issueNumber, { epic, pro, skipped: skippedSteps }),
     });
     updateJob(jobId, { prNumber });
+
+    if (skippedSteps.length > 0) {
+      await comment(
+        octokit,
+        job.owner,
+        job.repo,
+        prNumber,
+        `ai-dev: ${skippedSteps.length} plan step(s) could not be applied automatically and were skipped — the rest were committed. Please finish these manually:\n\n${skippedSteps
+          .map((s) => `- [ ] ${s}`)
+          .join("\n")}`,
+      );
+    }
 
     setState(jobId, JobState.CI_RUNNING);
     await report(client, jobId);

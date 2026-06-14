@@ -69,6 +69,16 @@ export async function currentSha(dir: string): Promise<string> {
   return res.stdout.trim();
 }
 
+/**
+ * Discard all uncommitted changes (tracked edits + untracked files) to return the
+ * working tree to a clean HEAD. Used to drop a partially-applied step before a
+ * retry or skip so it can't leak into a later step's commit.
+ */
+export async function discardChanges(dir: string): Promise<void> {
+  await run("git", ["-C", dir, "reset", "--hard", "HEAD"]);
+  await run("git", ["-C", dir, "clean", "-fd"]);
+}
+
 export async function pushBranch(
   dir: string,
   branch: string,

@@ -215,6 +215,25 @@ async function main(): Promise<void> {
   check("truncation notice steers model to @@FILE rewrite", truncated.includes("@@FILE"));
   check("full big file when cap is high", (readFileSafe(ctxDir, "big.txt", 200000) ?? "").length === 5000);
 
+  // ---- 4d. Implement prompt: full-file retry mode forbids @@EDIT ----
+  console.log("[prompt]");
+  const { implementPrompt } = await import("../src/llm/prompts.js");
+  const promptArgs = {
+    spec: { title: "t", summary: "s", requirements: [], acceptanceCriteria: [], affectedAreas: [], notes: "" },
+    steps: ["do x"],
+    files: [],
+    fileTree: "index.html",
+    stepIndex: 0,
+    epic: true,
+  };
+  const normalPrompt = implementPrompt({ ...promptArgs });
+  check("default implement prompt offers @@EDIT", normalPrompt.system.includes("@@EDIT"));
+  const forcedPrompt = implementPrompt({ ...promptArgs, forceFullFile: true });
+  check(
+    "forceFullFile prompt switches to full-file mode",
+    forcedPrompt.system.includes("FULL-FILE MODE") && forcedPrompt.system.includes("Do NOT use @@EDIT"),
+  );
+
   // ---- 5. CI log extractor ----
   console.log("[ci logs]");
   const { extractRelevantLogs } = await import("../src/ci/logs.js");

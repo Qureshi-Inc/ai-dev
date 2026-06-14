@@ -58,6 +58,8 @@ export function implementPrompt(args: {
   stepIndex?: number;
   /** Epic mode: gate new behavior behind a feature flag so each commit stays shippable. */
   epic?: boolean;
+  /** Retry mode: forbid @@EDIT and require full-file @@FILE ... modify rewrites. */
+  forceFullFile?: boolean;
 }): Prompt {
   const stepwise = typeof args.stepIndex === "number";
   // NOTE: deliberately NOT JSON. Embedding whole files (HTML/code with quotes and
@@ -126,6 +128,16 @@ export function implementPrompt(args: {
       "behavior behind a feature flag that defaults to OFF (e.g. an env var or a flag",
       "constant), so every commit is safe to ship even while the epic is incomplete.",
       "Keep the project building and existing behavior unchanged when the flag is off.",
+    );
+  }
+  if (args.forceFullFile) {
+    system.push(
+      "",
+      "RETRY — FULL-FILE MODE: A previous attempt's @@EDIT SEARCH text did not match the",
+      "file. Do NOT use @@EDIT this time. For every file you change, emit the COMPLETE new",
+      "file content as `@@FILE <repo-relative-path> modify` ... @@END (full raw contents,",
+      "not a diff). Reproduce the existing file faithfully and apply only the change this",
+      "step requires. This is the only reliable way when an exact SEARCH anchor can't be found.",
     );
   }
   const systemStr = system.join("\n");
