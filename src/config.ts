@@ -44,6 +44,9 @@ const RawSchema = z.object({
   // LM Studio JIT auto-unload TTL (seconds). The idle model unloads after this,
   // so qwen and deepseek are not both resident at once. 0 disables sending ttl.
   LLM_TTL_SECONDS: z.coerce.number().int().nonnegative().default(900),
+  // Eject-before-load: before each LLM call, unload any OTHER currently-loaded
+  // model via LM Studio's REST API so only the target model is resident. Best-effort.
+  EJECT_OTHER_MODELS: z.string().optional(),
   IMPLEMENT_CONTEXT_FILES: z.coerce.number().int().nonnegative().default(40),
   // Per-file byte cap for implement context. Must be large enough that the model
   // sees the FULL content of files it edits, otherwise @@EDIT SEARCH anchors for
@@ -110,6 +113,7 @@ export const config = {
     timeoutMs: raw.LLM_TIMEOUT_MS,
     maxOutputTokens: raw.LLM_MAX_OUTPUT_TOKENS,
     ttlSeconds: raw.LLM_TTL_SECONDS,
+    ejectOthers: boolFromEnv(raw.EJECT_OTHER_MODELS, true),
     implementContextFiles: raw.IMPLEMENT_CONTEXT_FILES,
     implementMaxFileBytes: raw.IMPLEMENT_MAX_FILE_BYTES,
   },

@@ -32,6 +32,76 @@ export interface CallResult {
   latencyMs: number;
 }
 
+/** LM Studio REST host: config.llm.baseUrl with a trailing "/v1" (and slash) stripped. */
+function lmStudioHost(): string {
+  return config.llm.baseUrl.replace(/\/+$/, "").replace(/\/v1$/i, "");
+}
+
+/** fetch with a hard timeout so a slow/unreachable endpoint can't stall the pipeline. */
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 5000): Promise<Response> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * Eject-before-load: unload every OTHER model currently resident in LM Studio so
+ * only `targetModel` will be loaded (JIT) by the imminent chat request. This keeps
+ * exactly one model in VRAM at a time (never two big models at once).
+ *
+ * Fully BEST-EFFORT and NON-FATAL: every network error is swallowed and logged at
+ * debug/warn. It must NEVER throw or block the actual completion (e.g. the smoke
+ * test points the base URL at an unreachable host — eject simply no-ops there).
+ */
+export async function ejectOthers(targetModel: string): Promise<void> {
+  if (!config.llm.ejectOthers) return;
+  const host = lmStudioHost();
+  const target = targetModel.trim().toLowerCase();
+
+  try {
+    const res = await fetchWithTimeout(`${host}/api/v0/models`, {
+      headers: { Authorization: `Bearer ${config.llm.apiKey}` },
+    });
+    if (!res.ok) {
+      logger.debug({ status: res.status }, "eject: could not list loaded models");
+      return;
+    }
+    const body = (await res.json()) as { data?: Array<{ id?: string; state?: string }> };
+    const loaded = (body.data ?? []).filter(
+      (m) => typeof m.id === "string" && m.state && m.state !== "not-loaded",
+    );
+
+    for (const m of loaded) {
+      const id = m.id as string;
+      if (id.trim().toLowerCase() === target) continue; // keep the model we're about to use
+      try {
+        const u = await fetchWithTimeout(`${host}/api/v1/models/unload`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.llm.apiKey}`,
+          },
+          body: JSON.stringify({ instance_id: id }),
+        });
+        if (u.ok) {
+          logger.info({ ejected: id, target: targetModel }, "eject: unloaded other model");
+        } else {
+          logger.warn({ model: id, status: u.status }, "eject: unload request failed");
+        }
+      } catch (err) {
+        logger.warn({ model: id, err: (err as Error).message }, "eject: unload errored (ignored)");
+      }
+    }
+  } catch (err) {
+    // Unreachable endpoint, JSON error, abort/timeout, etc. — never fatal.
+    logger.debug({ err: (err as Error).message }, "eject: skipped (list failed)");
+  }
+}
+
 /**
  * Extract a JSON object/array from a model response that may be wrapped in
  * markdown fences or surrounded by prose.
@@ -84,6 +154,10 @@ export async function callModel(task: TaskType, opts: CallOptions): Promise<Call
     "llm call -> dispatch",
   );
   logger.debug({ task, model, system: opts.system, user: opts.user }, "llm prompt");
+
+  // Eject-before-load: unload any OTHER resident model first so the imminent chat
+  // request JIT-loads `model` with nothing else in VRAM. Best-effort; never throws.
+  await ejectOthers(model);
 
   // Some LM Studio builds reject response_format=json_object (they only accept
   // json_schema or text), so we enforce JSON via the prompt + a robust extractor
