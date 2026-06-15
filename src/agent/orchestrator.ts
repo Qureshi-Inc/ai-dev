@@ -60,13 +60,21 @@ function prBody(
   steps: string[],
   summary: string,
   issueNumber: number,
-  opts: { epic?: boolean; pro?: boolean; skipped?: string[] } = {},
+  opts: {
+    epic?: boolean;
+    pro?: boolean;
+    skipped?: string[];
+    blockedWorkflows?: string[];
+    invalidWorkflows?: string[];
+  } = {},
 ): string {
   const badges: string[] = [];
   if (opts.epic) badges.push("`epic`");
   if (opts.pro) badges.push("`pro`");
   const codeModel = opts.pro ? config.llm.modelPro : config.llm.modelCode;
   const skipped = opts.skipped ?? [];
+  const blockedWorkflows = opts.blockedWorkflows ?? [];
+  const invalidWorkflows = opts.invalidWorkflows ?? [];
 
   const lines = [
     `> Automated by **ai-dev** for #${issueNumber}${badges.length ? ` — ${badges.join(" · ")}` : ""}`,
@@ -93,6 +101,16 @@ function prBody(
     );
   }
 
+  if (blockedWorkflows.length > 0 || invalidWorkflows.length > 0) {
+    lines.push("", "## ⚠️ Skipped GitHub Actions workflow file(s)");
+    for (const p of blockedWorkflows) {
+      lines.push(`- \`${p}\` — agent workflow edits are disabled (set \`ALLOW_WORKFLOW_EDITS=true\` to allow).`);
+    }
+    for (const p of invalidWorkflows) {
+      lines.push(`- \`${p}\` — invalid workflow YAML, not committed.`);
+    }
+  }
+
   if (opts.epic) {
     lines.push(
       "",
@@ -105,6 +123,23 @@ function prBody(
 
   lines.push("", `Closes #${issueNumber}`);
   return lines.join("\n");
+}
+
+/** Build a short human note about dropped workflow edits, or "" if none. */
+function workflowNoteText(blocked: string[], invalid: string[]): string {
+  if (blocked.length === 0 && invalid.length === 0) return "";
+  const parts: string[] = [];
+  if (blocked.length > 0) {
+    parts.push(
+      `⚠️ Skipped workflow file(s) ${blocked.map((p) => `\`${p}\``).join(", ")}: agent workflow edits are disabled (set \`ALLOW_WORKFLOW_EDITS=true\` to allow).`,
+    );
+  }
+  if (invalid.length > 0) {
+    parts.push(
+      `⚠️ Skipped workflow file(s) ${invalid.map((p) => `\`${p}\``).join(", ")}: invalid YAML, not committed.`,
+    );
+  }
+  return `ai-dev: ${parts.join("\n")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +266,8 @@ async function runIssue(jobId: number): Promise<void> {
     let summary = "";
     let committedAny = false;
     const skippedSteps: string[] = [];
+    const blockedWorkflows = new Set<string>();
+    const invalidWorkflows = new Set<string>();
     for (let i = 0; i < steps.length; i++) {
       await report(client, jobId, `step ${i + 1}/${steps.length} — ${steps[i]}`);
 
@@ -271,6 +308,9 @@ async function runIssue(jobId: number): Promise<void> {
         continue;
       }
 
+      for (const p of outcome.workflowsBlocked) blockedWorkflows.add(p);
+      for (const p of outcome.workflowsInvalid) invalidWorkflows.add(p);
+
       if (outcome.result.summary) summary = outcome.result.summary;
       const msg = `ai-dev: step ${i + 1}/${steps.length} — ${steps[i]}`.slice(0, 200);
       const stepSha = await commitAll(dir, msg);
@@ -286,6 +326,14 @@ async function runIssue(jobId: number): Promise<void> {
       log.warn({ skipped: skippedSteps.length }, "some steps could not be applied automatically");
     }
 
+    const workflowNote = workflowNoteText([...blockedWorkflows], [...invalidWorkflows]);
+    if (workflowNote) {
+      log.warn(
+        { blocked: [...blockedWorkflows], invalid: [...invalidWorkflows] },
+        "dropped GitHub Actions workflow edit(s)",
+      );
+    }
+
     if (!committedAny) {
       // Nothing changed across all steps. If a PR already exists, resume the CI/fix
       // loop against its head; otherwise fail.
@@ -298,13 +346,10 @@ async function runIssue(jobId: number): Promise<void> {
         queue.enqueue(`ci#${jobId}`, () => processCiOutcome(jobId));
         return;
       }
-      await comment(
-        octokit,
-        job.owner,
-        job.repo,
-        job.issueNumber,
-        "ai-dev: the model produced no file changes for this issue. Marking as failed.",
-      );
+      const noChangeMsg = workflowNote
+        ? `ai-dev: no committable changes were produced. ${workflowNote.replace(/^ai-dev: /, "")}`
+        : "ai-dev: the model produced no file changes for this issue. Marking as failed.";
+      await comment(octokit, job.owner, job.repo, job.issueNumber, noChangeMsg);
       updateJob(jobId, { lastError: "no changes generated" });
       setState(jobId, JobState.FAILED);
       await report(client, jobId);
@@ -319,9 +364,19 @@ async function runIssue(jobId: number): Promise<void> {
       branch,
       base,
       title: `ai-dev: ${spec.title}`,
-      body: prBody(spec, steps, summary, job.issueNumber, { epic, pro, skipped: skippedSteps }),
+      body: prBody(spec, steps, summary, job.issueNumber, {
+        epic,
+        pro,
+        skipped: skippedSteps,
+        blockedWorkflows: [...blockedWorkflows],
+        invalidWorkflows: [...invalidWorkflows],
+      }),
     });
     updateJob(jobId, { prNumber });
+
+    if (workflowNote) {
+      await comment(octokit, job.owner, job.repo, prNumber, workflowNote);
+    }
 
     if (skippedSteps.length > 0) {
       await comment(

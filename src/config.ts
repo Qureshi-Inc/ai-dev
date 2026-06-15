@@ -65,6 +65,11 @@ const RawSchema = z.object({
   EPIC_LABEL: z.string().default("ai-dev-epic"),
   // Max plan steps the implementer will execute per epic.
   EPIC_MAX_STEPS: z.coerce.number().int().positive().default(20),
+  // Allow the agent to create/modify GitHub Actions workflow files
+  // (.github/workflows/*). Default false: such edits are dropped (the agent has
+  // authored broken/inappropriate pipelines). When true, each workflow edit's
+  // resulting content is YAML- and Actions-shape-validated before being committed.
+  ALLOW_WORKFLOW_EDITS: z.string().optional(),
   // Comma-separated GitHub logins allowed to trigger the agent. Empty = anyone.
   TRIGGER_USERS: z.string().default(""),
   MAX_RETRIES: z.coerce.number().int().nonnegative().default(5),
@@ -128,6 +133,7 @@ export const config = {
     proLabel: raw.PRO_LABEL.trim(),
     epicLabel: raw.EPIC_LABEL.trim(),
     epicMaxSteps: raw.EPIC_MAX_STEPS,
+    allowWorkflowEdits: boolFromEnv(raw.ALLOW_WORKFLOW_EDITS, false),
     triggerUsers: raw.TRIGGER_USERS.split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),

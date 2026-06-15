@@ -1,11 +1,97 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { FileEdit } from "../types.js";
 import { logger } from "./logger.js";
 
 export interface AppliedEdit {
   path: string;
   action: FileEdit["action"];
+}
+
+/** True if `path` is a GitHub Actions workflow file (.github/workflows/*.yml|yaml). */
+export function isWorkflowPath(path: string): boolean {
+  const norm = path.replace(/\\/g, "/").toLowerCase();
+  return /(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/.test(norm);
+}
+
+/**
+ * Validate that `content` is parseable YAML shaped like a GitHub Actions workflow:
+ * a mapping with top-level `on` (trigger) and `jobs`. Lenient on the rest.
+ * Note: the `yaml` package uses YAML 1.2 (so `on` is the string key "on", not a
+ * boolean); we still check the legacy boolean-coerced "true" key defensively.
+ */
+export function isValidWorkflowYaml(content: string): boolean {
+  let doc: unknown;
+  try {
+    doc = parseYaml(content);
+  } catch {
+    return false;
+  }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return false;
+  const o = doc as Record<string, unknown>;
+  const hasOn = o["on"] !== undefined || o["true"] !== undefined;
+  const jobs = o["jobs"];
+  const hasJobs = !!jobs && typeof jobs === "object";
+  return hasOn && hasJobs;
+}
+
+export interface WorkflowPartition {
+  /** Edits to apply normally (non-workflow, or valid workflow edits when allowed). */
+  kept: FileEdit[];
+  /** Workflow edit paths dropped because agent workflow edits are disabled. */
+  blocked: string[];
+  /** Workflow edit paths dropped because the resulting content failed validation. */
+  invalid: string[];
+}
+
+/**
+ * Split file edits into ones to keep vs. workflow edits to drop. When workflow
+ * edits are disallowed, ALL `.github/workflows/*` edits are blocked. When allowed,
+ * each workflow edit's RESULTING content is validated as a GitHub Actions YAML
+ * file; invalid ones are dropped so broken workflows are never committed. Deletes
+ * of workflow files are kept when allowed (removing a workflow is safe).
+ */
+export function partitionWorkflowEdits(
+  dir: string,
+  edits: FileEdit[],
+  allow: boolean,
+): WorkflowPartition {
+  const kept: FileEdit[] = [];
+  const blocked: string[] = [];
+  const invalid: string[] = [];
+
+  for (const edit of edits) {
+    if (!edit.path || !isWorkflowPath(edit.path)) {
+      kept.push(edit);
+      continue;
+    }
+    if (!allow) {
+      blocked.push(edit.path);
+      continue;
+    }
+    if (edit.action === "delete") {
+      kept.push(edit);
+      continue;
+    }
+    // Compute the resulting content to validate.
+    let content: string;
+    try {
+      if (edit.action === "edit") {
+        const original = readFileSync(safeResolve(dir, edit.path), "utf8");
+        content = applySearchReplace(original, edit.search ?? "", edit.replace ?? "", edit.path);
+      } else {
+        content = edit.content ?? "";
+      }
+    } catch {
+      invalid.push(edit.path);
+      continue;
+    }
+    if (isValidWorkflowYaml(content)) kept.push(edit);
+    else invalid.push(edit.path);
+  }
+
+  return { kept, blocked, invalid };
 }
 
 /**

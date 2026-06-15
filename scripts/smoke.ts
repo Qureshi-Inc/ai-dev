@@ -215,6 +215,56 @@ async function main(): Promise<void> {
   check("truncation notice steers model to @@FILE rewrite", truncated.includes("@@FILE"));
   check("full big file when cap is high", (readFileSafe(ctxDir, "big.txt", 200000) ?? "").length === 5000);
 
+  // ---- 4c2. Workflow-edit guardrail (block by default; YAML-validate when enabled) ----
+  console.log("[workflow guard]");
+  const { partitionWorkflowEdits, isWorkflowPath, isValidWorkflowYaml } = await import("../src/utils/patch.js");
+  check(
+    "isWorkflowPath matches .github/workflows/*.yml|yaml",
+    isWorkflowPath(".github/workflows/deploy.yml") && isWorkflowPath(".github/workflows/ci.yaml"),
+  );
+  check("isWorkflowPath ignores normal files", !isWorkflowPath("src/index.ts") && !isWorkflowPath("README.md"));
+  const validWf =
+    "name: CI\non:\n  push:\n    branches: [main]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n";
+  const brokenWf = "name: CI\non: [push, pull_request\njobs:\n  build:\n    runs-on: ubuntu-latest\n"; // unclosed [
+  check("valid workflow YAML accepted", isValidWorkflowYaml(validWf));
+  check("broken workflow YAML rejected", !isValidWorkflowYaml(brokenWf));
+  check("workflow YAML missing jobs rejected", !isValidWorkflowYaml("on: push\n"));
+  // (a) disabled -> all workflow edits blocked, non-workflow edits kept.
+  const partOff = partitionWorkflowEdits(
+    TMP,
+    [
+      { path: ".github/workflows/deploy.yml", action: "create", content: validWf },
+      { path: "index.html", action: "create", content: "<!DOCTYPE html>\n" },
+    ],
+    false,
+  );
+  check(
+    "disabled: workflow edit blocked, normal edit kept",
+    partOff.blocked.includes(".github/workflows/deploy.yml") &&
+      partOff.kept.length === 1 &&
+      partOff.kept[0].path === "index.html" &&
+      partOff.invalid.length === 0,
+  );
+  // (b) enabled -> valid workflow kept, invalid workflow dropped.
+  const partOnValid = partitionWorkflowEdits(
+    TMP,
+    [{ path: ".github/workflows/deploy.yml", action: "create", content: validWf }],
+    true,
+  );
+  check(
+    "enabled: valid workflow kept",
+    partOnValid.kept.length === 1 && partOnValid.blocked.length === 0 && partOnValid.invalid.length === 0,
+  );
+  const partOnInvalid = partitionWorkflowEdits(
+    TMP,
+    [{ path: ".github/workflows/bad.yml", action: "create", content: brokenWf }],
+    true,
+  );
+  check(
+    "enabled: invalid workflow dropped (not committed)",
+    partOnInvalid.kept.length === 0 && partOnInvalid.invalid.includes(".github/workflows/bad.yml"),
+  );
+
   // ---- 4d. Implement prompt: full-file retry mode forbids @@EDIT ----
   console.log("[prompt]");
   const { implementPrompt } = await import("../src/llm/prompts.js");

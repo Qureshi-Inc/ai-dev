@@ -1,9 +1,10 @@
 import { z } from "zod";
+import { config } from "../config.js";
 import { callModel, extractJson } from "../llm/client.js";
 import { implementPrompt } from "../llm/prompts.js";
 import { TaskType, type FileEdit, type ImplementResult, type IssueSpec } from "../types.js";
 import { fileTree } from "../utils/git.js";
-import { applyEdits, type AppliedEdit } from "../utils/patch.js";
+import { applyEdits, partitionWorkflowEdits, type AppliedEdit } from "../utils/patch.js";
 import { selectContextFiles } from "./context.js";
 import { logger } from "../utils/logger.js";
 
@@ -26,6 +27,10 @@ const ImplementSchema = z.object({
 export interface ImplementOutcome {
   result: ImplementResult;
   applied: AppliedEdit[];
+  /** Workflow file paths dropped because agent workflow edits are disabled. */
+  workflowsBlocked: string[];
+  /** Workflow file paths dropped because the resulting content failed validation. */
+  workflowsInvalid: string[];
 }
 
 /**
@@ -130,10 +135,25 @@ export async function implementChanges(args: {
     throw new Error("implement response contained no parseable file edits");
   }
 
-  const applied = applyEdits(args.dir, result.files);
+  // Guardrail: never silently create/push GitHub Actions workflow files that are
+  // unwanted (default) or broken. Drop blocked/invalid workflow edits before applying;
+  // a step left with no other changes simply becomes a no-op (no hard failure).
+  const { kept, blocked, invalid } = partitionWorkflowEdits(
+    args.dir,
+    result.files,
+    config.agent.allowWorkflowEdits,
+  );
+  if (blocked.length > 0) {
+    logger.warn({ jobId: args.jobId, paths: blocked }, "dropped workflow edits (ALLOW_WORKFLOW_EDITS=false)");
+  }
+  if (invalid.length > 0) {
+    logger.warn({ jobId: args.jobId, paths: invalid }, "dropped invalid workflow edits (failed YAML/shape validation)");
+  }
+
+  const applied = applyEdits(args.dir, kept);
   logger.info(
     { jobId: args.jobId, files: applied.map((a) => `${a.action}:${a.path}`) },
     "patch applied",
   );
-  return { result, applied };
+  return { result, applied, workflowsBlocked: blocked, workflowsInvalid: invalid };
 }
