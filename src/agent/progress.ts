@@ -92,6 +92,33 @@ function statusLine(job: IssueJob, detail?: string): string {
   }
 }
 
+/**
+ * Explicit one-line CI status for the live panel. Surfaces whether CI exists for
+ * the current head SHA; mirrors the orchestrator's no-CI merge policy in wording.
+ * Returns null until something has been pushed / CI presence is determinable.
+ */
+function ciStatusLine(job: IssueJob): string | null {
+  if (!job.headSha) return null;
+  if (job.ciPresent === false) {
+    return "ℹ️ No CI configured for this PR — merging without CI checks.";
+  }
+  if (job.ciPresent === true) {
+    switch (job.state) {
+      case JobState.CI_RUNNING:
+        return "⏳ CI running…";
+      case JobState.FIXING:
+        return `❌ CI failed (attempt ${job.retryCount + 1}/${config.agent.maxRetries})`;
+      case JobState.PR_OPEN:
+      case JobState.MERGED:
+      case JobState.DEPLOYED:
+        return "✅ CI passed";
+      default:
+        return null;
+    }
+  }
+  return null; // presence not yet determined
+}
+
 function modeBadges(job: IssueJob): string {
   const tags: string[] = [];
   if (job.epic) tags.push("`epic`");
@@ -128,10 +155,13 @@ function buildBody(job: IssueJob, detail?: string): string {
   if (job.retryCount > 0) facts.push(`**Fix attempts:** ${job.retryCount}/${config.agent.maxRetries}`);
   facts.push(`**Elapsed:** ${elapsed(job)}`);
 
+  const ci = ciStatusLine(job);
+
   const lines = [
     `## 🤖 ai-dev${modeBadges(job)}`,
     "",
     `**Status:** ${statusLine(job, detail)}`,
+    ...(ci ? ["", ci] : []),
     "",
     ...checklist,
     "",

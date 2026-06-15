@@ -50,6 +50,8 @@ export interface IssueJob {
   progressCommentId: number | null;
   progressPrCommentId: number | null;
   epic: boolean;
+  /** Whether CI exists for the current head SHA: null = undetermined, true/false once checked. */
+  ciPresent: boolean | null;
   createdAt: string;
   updatedAt: string;
 }

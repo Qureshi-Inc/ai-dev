@@ -63,5 +63,9 @@ if (!jobCols.includes("pro")) {
 if (!jobCols.includes("epic")) {
   db.exec("ALTER TABLE issue_jobs ADD COLUMN epic INTEGER NOT NULL DEFAULT 0");
 }
+// Nullable: NULL = CI presence not yet determined, 1 = CI exists, 0 = no CI.
+if (!jobCols.includes("ci_present")) {
+  db.exec("ALTER TABLE issue_jobs ADD COLUMN ci_present INTEGER");
+}
 
 logger.info({ dbPath: config.agent.dbPath }, "sqlite storage ready");

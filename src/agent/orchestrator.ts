@@ -419,6 +419,8 @@ async function processCiOutcome(jobId: number): Promise<void> {
       // After a grace period, decide whether CI will ever report for this commit.
       if (ageMs > config.ci.graceMs) {
         const ci = await hasCiForSha(octokit, job.owner, job.repo, job.headSha);
+        // Surface CI presence in the live status panel (does not affect policy).
+        if (job.ciPresent !== ci) updateJob(jobId, { ciPresent: ci });
         if (!ci) {
           // No workflow runs and no check-runs for this commit -> the repo has no CI
           // that runs on it. Apply the no-CI policy.
@@ -494,6 +496,8 @@ async function processCiOutcome(jobId: number): Promise<void> {
       return;
     }
     log.info({ conclusion: outcome.conclusion, runId: outcome.runId }, "CI outcome");
+    // A definitive CI outcome means CI ran for this commit.
+    if (job.ciPresent !== true) updateJob(jobId, { ciPresent: true });
 
     if (outcome.conclusion === "success") {
       await onCiGreen(client, job);
@@ -658,7 +662,8 @@ async function fixAndRetry(client: RepoClient, job: IssueJob, logsExcerpt: strin
   }
 
   const retryCount = incrementRetry(job.id);
-  updateJob(job.id, { headSha: sha });
+  // New head SHA -> CI presence is undetermined again until re-checked.
+  updateJob(job.id, { headSha: sha, ciPresent: null });
   await pushBranch(dir, branch, job.owner, job.repo, token);
   setState(job.id, JobState.CI_RUNNING);
   await report(client, job.id);

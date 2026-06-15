@@ -19,6 +19,7 @@ interface JobRow {
   plan: string | null;
   progress_comment_id: number | null;
   progress_pr_comment_id: number | null;
+  ci_present: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -42,6 +43,7 @@ function rowToJob(row: JobRow): IssueJob {
     plan: row.plan,
     progressCommentId: row.progress_comment_id,
     progressPrCommentId: row.progress_pr_comment_id,
+    ciPresent: row.ci_present === null ? null : !!row.ci_present,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -113,6 +115,7 @@ type JobPatch = Partial<{
   title: string;
   pro: boolean;
   epic: boolean;
+  ciPresent: boolean | null;
   progressCommentId: number | null;
   progressPrCommentId: number | null;
 }>;
@@ -127,6 +130,7 @@ const COLUMN_MAP: Record<keyof JobPatch, string> = {
   title: "title",
   pro: "pro",
   epic: "epic",
+  ciPresent: "ci_present",
   progressCommentId: "progress_comment_id",
   progressPrCommentId: "progress_pr_comment_id",
 };
