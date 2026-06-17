@@ -74,7 +74,7 @@ other model then evicts the previous one.
 
 - Node.js 18+ (developed on 18.19) for local dev; the Docker image uses Node 20.
 - LM Studio running with both models available and JIT loading enabled, reachable on the
-  LAN at `http://192.168.4.5:1234` (set `LMSTUDIO_BASE_URL`).
+  LAN at `http://192.168.4.38:1234` (set `LMSTUDIO_BASE_URL`).
 - A GitHub App (below) installed on the target repo(s).
 - A public hostname for the webhook (e.g. a Cloudflare tunnel).
 
@@ -149,7 +149,7 @@ docker compose up -d --build
 Joins the `cloudflared_default` Docker network (so the Cloudflare tunnel routes to it by
 container name), publishes `127.0.0.1:8088` for local debugging, and
 mounts `./data` for the SQLite DB and repo clones. LM Studio is reached over the LAN at
-`192.168.4.5:1234`, so host networking is not required for that. Homepage labels are
+`192.168.4.38:1234`, so host networking is not required for that. Homepage labels are
 included; adjust them before deploying.
 
 ## Smoke test

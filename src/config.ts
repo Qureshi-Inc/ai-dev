@@ -30,7 +30,7 @@ const RawSchema = z.object({
   GITHUB_APP_ID: z.string().default(""),
   GITHUB_WEBHOOK_SECRET: z.string().default(""),
 
-  LMSTUDIO_BASE_URL: z.string().default("http://192.168.4.5:1234/v1"),
+  LMSTUDIO_BASE_URL: z.string().default("http://192.168.4.38:1234/v1"),
   LMSTUDIO_API_KEY: z.string().default("lm-studio"),
   MODEL_CODE: z.string().default("qwen3-coder-30b-a3b-instruct"),
   MODEL_DEBUG: z.string().default("deepseek-coder-v2-lite-instruct"),
