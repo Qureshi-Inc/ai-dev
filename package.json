@@ -2,7 +2,7 @@
   "name": "ai-dev-orchestrator",
   "version": "0.1.0",
   "private": true,
-  "description": "Autonomous coding agent: GitHub issues -> tested, auto-merged PRs via LM Studio (Qwen + DeepSeek).",
+  "description": "Autonomous coding agent: GitHub issues -> tested, auto-merged PRs via oMLX (Qwen3.6-35B-A3B-MLX-8bit).",
   "type": "module",
   "engines": {
     "node": ">=18.18"

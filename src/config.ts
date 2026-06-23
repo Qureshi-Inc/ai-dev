@@ -30,13 +30,14 @@ const RawSchema = z.object({
   GITHUB_APP_ID: z.string().default(""),
   GITHUB_WEBHOOK_SECRET: z.string().default(""),
 
+  // oMLX (MLX-based local model server, OpenAI-compatible). Requires an API key.
   LMSTUDIO_BASE_URL: z.string().default("http://192.168.4.38:1234/v1"),
-  LMSTUDIO_API_KEY: z.string().default("lm-studio"),
-  MODEL_CODE: z.string().default("qwen3-coder-30b-a3b-instruct"),
-  MODEL_DEBUG: z.string().default("deepseek-coder-v2-lite-instruct"),
+  LMSTUDIO_API_KEY: z.string().default(""),
+  MODEL_CODE: z.string().default("Qwen3.6-35B-A3B-MLX-8bit"),
+  MODEL_DEBUG: z.string().default("Qwen3.6-35B-A3B-MLX-8bit"),
   // "Pro" model: used for everything on ai-dev-pro issues, and for coding fixes
-  // after escalation (a failed CI attempt).
-  MODEL_PRO: z.string().default("qwen/qwen3.6-35b-a3b"),
+  // after escalation (a failed CI attempt). Currently the same single oMLX model.
+  MODEL_PRO: z.string().default("Qwen3.6-35B-A3B-MLX-8bit"),
   // Coding tasks escalate to MODEL_PRO once attempt >= this value (0 = initial try).
   ESCALATE_AFTER_RETRIES: z.coerce.number().int().nonnegative().default(1),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(600000),

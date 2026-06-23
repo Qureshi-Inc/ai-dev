@@ -1,9 +1,10 @@
 # ai-dev — Autonomous Coding Agent
 
 Turns GitHub issues into tested, auto-merged pull requests using local models served by
-[LM Studio](https://lmstudio.ai/) (OpenAI-compatible API). A deterministic router sends
-code work to **qwen3-coder-30b-a3b-instruct** and CI-failure debugging to
-**deepseek-coder-v2-lite-instruct** (configurable via `MODEL_CODE` / `MODEL_DEBUG`).
+**oMLX** (an MLX-based local model server with an OpenAI-compatible API). A deterministic
+router currently sends all work to a single coding model, **Qwen3.6-35B-A3B-MLX-8bit**
+(configurable via `MODEL_CODE` / `MODEL_DEBUG` / `MODEL_PRO`). oMLX requires an API key
+(Bearer token) set via `LMSTUDIO_API_KEY`.
 
 ## What it does
 
@@ -42,7 +43,7 @@ src/
   index.ts            bootstrap: express + webhook endpoint + queue + poller
   config.ts           env loading/validation
   router/router.ts    deterministic task -> model
-  llm/                LM Studio client + prompt templates
+  llm/                oMLX (OpenAI-compatible) client + prompt templates
   github/             GitHub App auth, webhooks, repo/PR ops, CI run + logs
   ci/                 log extraction + polling fallback
   agent/              parse, plan, implement, debug, orchestrator (state machine), deploy hook
@@ -63,18 +64,19 @@ Rule-based, no LLM (`src/router/router.ts`):
 | `IMPLEMENT`, `EDIT`, `GENERATE`, `PARSE`, `PLAN` | `MODEL_CODE` (Qwen) |
 | `CI_ANALYSIS`, `DEBUG`, `REASONING` | `MODEL_DEBUG` (DeepSeek) |
 
-The orchestrator **switches** models by calling each one by its exact id, relying on LM
-Studio's JIT loading — it does not require both models resident at once. Each request also
-sends a JIT `ttl` (`LLM_TTL_SECONDS`, default 900s) so the idle model auto-unloads. For a
-hard guarantee that only one model is loaded at a time, enable LM Studio's
-**"Only keep last JIT loaded model loaded"** (Developer → Server settings); requesting the
-other model then evicts the previous one.
+The orchestrator addresses models by their exact oMLX id. oMLX handles loading/unloading
+of MLX models on the serving host; each request also sends a JIT `ttl` (`LLM_TTL_SECONDS`,
+default 900s) so an idle model can auto-unload. Today `MODEL_CODE`, `MODEL_DEBUG`, and
+`MODEL_PRO` all point at the same single coding model, so no model switching occurs; set
+them to different oMLX ids if you want per-task routing.
 
 ## Prerequisites
 
 - Node.js 18+ (developed on 18.19) for local dev; the Docker image uses Node 20.
-- LM Studio running with both models available and JIT loading enabled, reachable on the
-  LAN at `http://192.168.4.38:1234` (set `LMSTUDIO_BASE_URL`).
+- oMLX running with the coding model available, reachable on the LAN at
+  `http://192.168.4.38:1234/v1` (set `LMSTUDIO_BASE_URL`). oMLX requires an API key —
+  set it in `LMSTUDIO_API_KEY`. Verify with:
+  `curl -H "Authorization: Bearer $LMSTUDIO_API_KEY" http://192.168.4.38:1234/v1/models`.
 - A GitHub App (below) installed on the target repo(s).
 - A public hostname for the webhook (e.g. a Cloudflare tunnel).
 
@@ -122,8 +124,9 @@ Copy `.env.example` to `.env` and fill it in. Key settings:
 - `TRIGGER_USERS` — comma-separated GitHub logins allowed to trigger (the actor who
   applies the label / opens the issue). Empty = anyone. Case-insensitive.
 - `MAX_RETRIES`, `AUTO_MERGE`, `MERGE_METHOD`, `BRANCH_PREFIX`.
-- `MODEL_CODE` (`qwen3-coder-30b-a3b-instruct`), `MODEL_DEBUG`
-  (`deepseek-coder-v2-lite-instruct`) — exact LM Studio model identifiers.
+- `MODEL_CODE` / `MODEL_DEBUG` / `MODEL_PRO` — exact oMLX model ids (from
+  `GET /v1/models`). Currently all set to `Qwen3.6-35B-A3B-MLX-8bit` (single model).
+- `LMSTUDIO_API_KEY` — required Bearer token for oMLX.
 - `COOLIFY_DEPLOY_HOOK_URL` — optional; POSTed after a successful merge.
 
 ## Run locally
@@ -148,14 +151,14 @@ docker compose up -d --build
 
 Joins the `cloudflared_default` Docker network (so the Cloudflare tunnel routes to it by
 container name), publishes `127.0.0.1:8088` for local debugging, and
-mounts `./data` for the SQLite DB and repo clones. LM Studio is reached over the LAN at
+mounts `./data` for the SQLite DB and repo clones. oMLX is reached over the LAN at
 `192.168.4.38:1234`, so host networking is not required for that. Homepage labels are
 included; adjust them before deploying.
 
 ## Smoke test
 
 `npm run smoke` exercises the deterministic router, the SQLite state machine + guardrails,
-the CI log extractor, and the patch applier without needing GitHub or LM Studio.
+the CI log extractor, and the patch applier without needing GitHub or oMLX.
 
 ## Safety / guardrails
 
