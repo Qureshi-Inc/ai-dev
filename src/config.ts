@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 
@@ -94,6 +95,56 @@ const RawSchema = z.object({
   MERGE_WITHOUT_CI: z.string().optional(),
 
   COOLIFY_DEPLOY_HOOK_URL: z.string().default(""),
+
+  // Project Mode: multi-task orchestration for complex issues.
+  PROJECT_MODE_ENABLED: z.string().optional(),
+  PROJECT_LABEL: z.string().default("ai-dev-project"),
+  // Max tasks a project plan may contain.
+  PROJECT_MAX_TASKS: z.coerce.number().int().positive().default(50),
+  // Task Master binary/command for planning. Default: use the LLM directly.
+  TASK_MASTER_CMD: z.string().default(""),
+
+  // Use Claude Code (Bedrock) for project planning instead of oMLX.
+  // When true, the Task Master invokes Claude Code headlessly for plan generation,
+  // giving you Opus-quality plans even with a smaller local execution model.
+  PROJECT_PLAN_VIA_CLAUDE_CODE: z.string().optional(),
+
+  // Dashboard & SSE
+  DASHBOARD_API_TOKEN: z.string().default(""),
+  DASHBOARD_MAX_CLIENTS: z.coerce.number().int().positive().default(20),
+  DASHBOARD_ALLOWED_USERS: z.string().default(""),
+
+  // oMLX monitoring
+  OMLX_MONITORING_ENABLED: z.string().optional(),
+  OMLX_STATS_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
+  OMLX_IDLE_HEALTH_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
+  OMLX_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+  OMLX_ADMIN_STATS_ENABLED: z.string().optional(),
+  OMLX_ADMIN_AUTH_HEADER: z.string().default(""),
+  OMLX_ADMIN_AUTH_COOKIE: z.string().default(""),
+
+  // Claude Code execution engine for Project Mode tasks.
+  CLAUDE_CODE_BIN: z.string().default("claude"),
+  // Per-task timeout in ms (default 15 min).
+  CLAUDE_CODE_TIMEOUT_MS: z.coerce.number().int().positive().default(900000),
+  // Max Claude Code attempts per task before marking it FAILED.
+  CLAUDE_CODE_MAX_RETRIES: z.coerce.number().int().nonnegative().default(3),
+  // Max CI fix attempts per task PR (separate from code retries).
+  CLAUDE_CODE_CI_MAX_RETRIES: z.coerce.number().int().nonnegative().default(3),
+  // Max files changed per task (safety limit).
+  CLAUDE_CODE_MAX_CHANGED_FILES: z.coerce.number().int().positive().default(30),
+  // Max diff size in bytes per task (safety limit).
+  CLAUDE_CODE_MAX_DIFF_BYTES: z.coerce.number().int().positive().default(500000),
+  // Max net deletions per task (safety limit). 0 = no limit.
+  CLAUDE_CODE_MAX_NET_DELETIONS: z.coerce.number().int().nonnegative().default(500),
+  // Whether to preserve failed worktrees for debugging (true) or auto-remove them.
+  CLAUDE_CODE_PRESERVE_FAILED_WORKTREES: z.string().optional(),
+  // Allow deployment-related changes (Dockerfile, docker-compose, k8s manifests).
+  CLAUDE_CODE_ALLOW_DEPLOY_EDITS: z.string().optional(),
+  // Test command to run after Claude Code modifies files (empty = skip).
+  CLAUDE_CODE_TEST_CMD: z.string().default(""),
+  // Worktree base directory (default: data/worktrees).
+  CLAUDE_CODE_WORKTREE_DIR: z.string().default(""),
 });
 
 const raw = RawSchema.parse(process.env);
@@ -156,6 +207,43 @@ export const config = {
 
   coolify: {
     deployHookUrl: raw.COOLIFY_DEPLOY_HOOK_URL.trim(),
+  },
+
+  project: {
+    enabled: boolFromEnv(raw.PROJECT_MODE_ENABLED, false),
+    label: raw.PROJECT_LABEL.trim(),
+    maxTasks: raw.PROJECT_MAX_TASKS,
+    taskMasterCmd: raw.TASK_MASTER_CMD.trim(),
+    planViaClaudeCode: boolFromEnv(raw.PROJECT_PLAN_VIA_CLAUDE_CODE, false),
+  },
+
+  dashboard: {
+    apiToken: raw.DASHBOARD_API_TOKEN.trim(),
+    maxClients: raw.DASHBOARD_MAX_CLIENTS,
+    allowedUsers: raw.DASHBOARD_ALLOWED_USERS.split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+    omlxMonitoringEnabled: boolFromEnv(raw.OMLX_MONITORING_ENABLED, true),
+    omlxStatsIntervalMs: raw.OMLX_STATS_INTERVAL_MS,
+    omlxIdleHealthIntervalMs: raw.OMLX_IDLE_HEALTH_INTERVAL_MS,
+    omlxRequestTimeoutMs: raw.OMLX_REQUEST_TIMEOUT_MS,
+    omlxAdminStatsEnabled: boolFromEnv(raw.OMLX_ADMIN_STATS_ENABLED, false),
+    omlxAdminAuthHeader: raw.OMLX_ADMIN_AUTH_HEADER.trim(),
+    omlxAdminAuthCookie: raw.OMLX_ADMIN_AUTH_COOKIE.trim(),
+  },
+
+  claudeCode: {
+    bin: raw.CLAUDE_CODE_BIN.trim(),
+    timeoutMs: raw.CLAUDE_CODE_TIMEOUT_MS,
+    maxRetries: raw.CLAUDE_CODE_MAX_RETRIES,
+    ciMaxRetries: raw.CLAUDE_CODE_CI_MAX_RETRIES,
+    maxChangedFiles: raw.CLAUDE_CODE_MAX_CHANGED_FILES,
+    maxDiffBytes: raw.CLAUDE_CODE_MAX_DIFF_BYTES,
+    maxNetDeletions: raw.CLAUDE_CODE_MAX_NET_DELETIONS,
+    preserveFailedWorktrees: boolFromEnv(raw.CLAUDE_CODE_PRESERVE_FAILED_WORKTREES, true),
+    allowDeployEdits: boolFromEnv(raw.CLAUDE_CODE_ALLOW_DEPLOY_EDITS, false),
+    testCmd: raw.CLAUDE_CODE_TEST_CMD.trim(),
+    worktreeDir: raw.CLAUDE_CODE_WORKTREE_DIR.trim() || join(dirname(raw.DB_PATH), "worktrees"),
   },
 } as const;
 

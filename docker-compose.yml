@@ -10,11 +10,28 @@ services:
       - WORKDIR=/app/data/repos
       - DB_PATH=/app/data/agent.db
       - LOG_PRETTY=false
+      # Project Mode (disabled by default; set in .env to enable).
+      - PROJECT_MODE_ENABLED=${PROJECT_MODE_ENABLED:-false}
+      - PROJECT_PLAN_VIA_CLAUDE_CODE=${PROJECT_PLAN_VIA_CLAUDE_CODE:-false}
+      # AWS/Bedrock credentials for Claude Code planning.
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_PROFILE=${AWS_PROFILE:-}
+      - CLAUDE_CODE_USE_BEDROCK=${CLAUDE_CODE_USE_BEDROCK:-}
+      # Claude Code execution engine.
+      - CLAUDE_CODE_WORKTREE_DIR=/app/data/worktrees
     volumes:
       - ./data:/app/data
       # Mounted at the same absolute path used by GITHUB_PRIVATE_KEY_PATH so host
       # (local dev) and container resolve the key identically.
       - ./secrets:/home/opti3/services/ai-dev/secrets:ro
+      # AWS credentials for Claude Code (Bedrock) planning.
+      - ~/.aws:/root/.aws:ro
+      # Claude Code settings (model config for Bedrock, without skipDangerousMode for root).
+      - ./secrets/claude-settings.json:/root/.claude/settings.json:ro
     expose:
       - "8088"
     # Bind to localhost on the host for local curl/debugging of /status and /healthz.
@@ -25,13 +42,28 @@ services:
       # container by name: Public Hostname service -> http://ai-dev-orchestrator:8088
       - cloudflared
     labels:
-      # Homepage auto-discovery (read via the Docker socket; adjust before deploying).
       - homepage.group=Platform
       - homepage.name=AI-Dev Agent
       - homepage.description=Autonomous GitHub issue to merged-PR coding agent
       - homepage.icon=mdi-robot
-      - homepage.href=https://ai-dev.qureshi.io/status
+      - homepage.href=https://ai-dev.qureshi.io/healthz
       - homepage.siteMonitor=https://ai-dev.qureshi.io/healthz
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    container_name: ai-dev-dashboard
+    restart: unless-stopped
+    environment:
+      - AI_DEV_BACKEND_URL=http://ai-dev-orchestrator:8088
+      - NEXT_TELEMETRY_DISABLED=1
+    expose:
+      - "3000"
+    networks:
+      - cloudflared
+    depends_on:
+      - ai-dev
 
 networks:
   cloudflared:

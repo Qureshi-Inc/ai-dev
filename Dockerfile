@@ -20,9 +20,23 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # git CLI is required at runtime (the agent shells out to git).
+# curl is needed for Task Master and Claude Code installation verification.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
+  && apt-get install -y --no-install-recommends git ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
+
+# Pin Claude Code version for reproducibility.
+# Installed globally so the executor can invoke it as 'claude'.
+ARG CLAUDE_CODE_VERSION=1.0.29
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+  && claude --version
+
+# Create non-root user for Claude Code subprocess isolation.
+# The main orchestrator runs as root (needs to read mounted secrets),
+# but Claude Code is invoked with a sanitized env that excludes secrets.
+RUN useradd -m -s /bin/bash aidev \
+  && mkdir -p /app/data/worktrees \
+  && chown -R aidev:aidev /app/data/worktrees
 
 COPY package.json ./
 COPY --from=build /app/node_modules ./node_modules

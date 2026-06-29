@@ -37,6 +37,9 @@ process.env.LOG_PRETTY = "false";
 process.env.PORT = String(PORT);
 process.env.PRO_LABEL = "ai-dev-pro";
 process.env.ESCALATE_AFTER_RETRIES = "1";
+process.env.PROJECT_MODE_ENABLED = "true";
+process.env.PROJECT_LABEL = "ai-dev-project";
+process.env.PROJECT_MAX_TASKS = "50";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -297,7 +300,171 @@ async function main(): Promise<void> {
   check("log excerpt keeps the error line", excerpt.includes("expected 'hi'"));
   check("log excerpt keeps the failure summary", excerpt.includes("1 failed"));
 
-  // ---- 6. HTTP webhook -> orchestrator dispatch (simulated, signed) ----
+  // ---- 6. Project Mode ----
+  console.log("[project mode]");
+  const projectState = await import("../src/storage/projectState.js");
+  const { parseProjectCommand } = await import("../src/agent/projectCommands.js");
+  const { ProjectState, ProjectTaskState } = await import("../src/types.js");
+
+  // -- Command parser --
+  check("parse /ai-dev approve", parseProjectCommand("/ai-dev approve")?.type === "approve");
+  check("parse /ai-dev pause", parseProjectCommand("/ai-dev pause")?.type === "pause");
+  check("parse /ai-dev resume", parseProjectCommand("/ai-dev resume")?.type === "resume");
+  check("parse /ai-dev status", parseProjectCommand("/ai-dev status")?.type === "status");
+  check("parse /ai-dev cancel", parseProjectCommand("/ai-dev cancel")?.type === "cancel");
+  const retryCmd = parseProjectCommand("/ai-dev retry 3");
+  check("parse /ai-dev retry 3", retryCmd?.type === "retry" && retryCmd.taskId === 2);
+  check("parse /ai-dev retry (invalid)", parseProjectCommand("/ai-dev retry") === null);
+  check("parse unrelated comment", parseProjectCommand("this is a regular comment") === null);
+  check("parse /ai-dev in multiline", parseProjectCommand("some text\n/ai-dev approve\nmore text")?.type === "approve");
+
+  // -- Project CRUD --
+  const p1 = projectState.getOrCreateProject({
+    owner: "octo",
+    repo: "demo",
+    issueNumber: 100,
+    title: "Big Feature",
+    createdBy: "tester",
+  });
+  check("project created", p1.created === true);
+  check("project initial state is PLANNING", p1.project.state === ProjectState.PLANNING);
+
+  const p2 = projectState.getOrCreateProject({
+    owner: "octo",
+    repo: "demo",
+    issueNumber: 100,
+    title: "Big Feature",
+    createdBy: "tester",
+  });
+  check("project duplicate prevention (UNIQUE constraint)", p2.created === false && p2.project.id === p1.project.id);
+
+  // -- Task CRUD --
+  const t1 = projectState.createProjectTask({
+    projectId: p1.project.id,
+    taskIndex: 0,
+    title: "Add types",
+    description: "Define TypeScript interfaces",
+    dependencies: [],
+    subtasks: ["Define Project interface", "Define ProjectTask interface"],
+  });
+  check("task created with READY state (no deps)", t1.state === ProjectTaskState.READY);
+
+  const t2 = projectState.createProjectTask({
+    projectId: p1.project.id,
+    taskIndex: 1,
+    title: "Add storage",
+    description: "SQLite tables",
+    dependencies: [0],
+    subtasks: [],
+  });
+  check("task with deps created as BLOCKED", t2.state === ProjectTaskState.BLOCKED);
+
+  const t3 = projectState.createProjectTask({
+    projectId: p1.project.id,
+    taskIndex: 2,
+    title: "Add API",
+    description: "REST endpoints",
+    dependencies: [0, 1],
+    subtasks: [],
+  });
+  check("task with multiple deps created as BLOCKED", t3.state === ProjectTaskState.BLOCKED);
+
+  // -- Dependency-aware task selection --
+  let readyTasks = projectState.getNextReadyTasks(p1.project.id);
+  check("only task 0 is ready initially", readyTasks.length === 1 && readyTasks[0].taskIndex === 0);
+
+  // Complete task 0 -> task 1 should become READY
+  projectState.setTaskState(t1.id, ProjectTaskState.COMPLETED);
+  readyTasks = projectState.getNextReadyTasks(p1.project.id);
+  check("task 1 promoted to READY after dep 0 completes", readyTasks.length === 1 && readyTasks[0].taskIndex === 1);
+
+  // Complete task 1 -> task 2 should become READY
+  projectState.setTaskState(t2.id, ProjectTaskState.COMPLETED);
+  readyTasks = projectState.getNextReadyTasks(p1.project.id);
+  check("task 2 promoted to READY after deps 0,1 complete", readyTasks.length === 1 && readyTasks[0].taskIndex === 2);
+
+  // -- Completion checks --
+  check("project not complete (task 2 still READY)", !projectState.isProjectComplete(p1.project.id));
+  projectState.setTaskState(t3.id, ProjectTaskState.COMPLETED);
+  check("project complete (all tasks terminal)", projectState.isProjectComplete(p1.project.id));
+  check("project successful (all completed)", projectState.isProjectSuccessful(p1.project.id));
+
+  // -- State transitions --
+  projectState.setProjectState(p1.project.id, ProjectState.AWAITING_APPROVAL);
+  check("project state transition", projectState.getProjectById(p1.project.id)!.state === ProjectState.AWAITING_APPROVAL);
+
+  // -- Config integration --
+  check("project mode enabled", config.project.enabled === true);
+  check("project label configured", config.project.label === "ai-dev-project");
+  check("project max tasks configured", config.project.maxTasks === 50);
+
+  // ---- 6b. Execution engine (secret isolation, config, task updates) ----
+  console.log("[execution engine]");
+  const { validateSanitizedEnv, ClaudeCodeTaskExecutor, runFinalValidation } = await import("../src/agent/claudeCodeExecutor.js");
+
+  // -- Secret isolation --
+  const cleanEnv = {
+    HOME: "/home/test",
+    PATH: "/usr/bin",
+    ANTHROPIC_BASE_URL: "http://192.168.4.38:1234",
+    ANTHROPIC_API_KEY: "test-key",
+  };
+  check("clean env passes validation", validateSanitizedEnv(cleanEnv).length === 0);
+
+  const leakyEnv = {
+    ...cleanEnv,
+    GITHUB_PRIVATE_KEY: "-----BEGIN RSA-----",
+    GITHUB_WEBHOOK_SECRET: "secret123",
+  };
+  const leaks = validateSanitizedEnv(leakyEnv);
+  check("leaky env detected (GITHUB_PRIVATE_KEY)", leaks.includes("GITHUB_PRIVATE_KEY"));
+  check("leaky env detected (GITHUB_WEBHOOK_SECRET)", leaks.includes("GITHUB_WEBHOOK_SECRET"));
+
+  const dockerLeakEnv = { ...cleanEnv, DOCKER_HOST: "unix:///var/run/docker.sock" };
+  check("DOCKER_HOST leak detected", validateSanitizedEnv(dockerLeakEnv).includes("DOCKER_HOST"));
+
+  const sshLeakEnv = { ...cleanEnv, SSH_AUTH_SOCK: "/tmp/ssh-agent" };
+  check("SSH_AUTH_SOCK leak detected", validateSanitizedEnv(sshLeakEnv).includes("SSH_AUTH_SOCK"));
+
+  // -- Executor instantiation --
+  const executor = new ClaudeCodeTaskExecutor();
+  check("executor instantiates", executor !== null);
+  check("executor.canExecute always true", executor.canExecute(t1));
+
+  // -- Task update with new fields --
+  const taskWithBranch = projectState.updateProjectTask(t1.id, {
+    branch: "project/100/task-1",
+    prNumber: 42,
+    headSha: "abc123",
+    retryCount: 2,
+    ciRetryCount: 1,
+    worktreePath: "/tmp/wt/test",
+  });
+  check("task branch persisted", taskWithBranch.branch === "project/100/task-1");
+  check("task prNumber persisted", taskWithBranch.prNumber === 42);
+  check("task headSha persisted", taskWithBranch.headSha === "abc123");
+  check("task retryCount persisted", taskWithBranch.retryCount === 2);
+  check("task ciRetryCount persisted", taskWithBranch.ciRetryCount === 1);
+  check("task worktreePath persisted", taskWithBranch.worktreePath === "/tmp/wt/test");
+
+  // -- Duplicate prevention (existing branch detection on restart) --
+  const dupTask = projectState.getProjectTaskByIndex(p1.project.id, 0);
+  check("task retrievable by index for restart recovery", dupTask?.id === t1.id);
+
+  // -- Final validation report generation --
+  const report = await runFinalValidation(p1.project);
+  check("final validation produces report", report.report.includes("Final Report"));
+  check("final validation reports correct task count", report.report.includes(`${3}`));
+
+  // -- Config: Claude Code settings loaded --
+  check("claude code timeout configured", config.claudeCode.timeoutMs > 0);
+  check("claude code max retries configured", config.claudeCode.maxRetries >= 0);
+  check("claude code max changed files configured", config.claudeCode.maxChangedFiles > 0);
+  check("claude code max diff bytes configured", config.claudeCode.maxDiffBytes > 0);
+  check("claude code worktree dir configured", config.claudeCode.worktreeDir.length > 0);
+  check("claude code preserve failed worktrees default true", config.claudeCode.preserveFailedWorktrees === true);
+
+  // ---- 7. HTTP webhook -> orchestrator dispatch (simulated, signed) ----
   console.log("[webhook e2e]");
   await import("../src/index.js"); // boots express server + registers webhooks
 

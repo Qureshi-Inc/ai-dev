@@ -10,3 +10,4 @@ secrets/
 # Runtime data
 data/
 repos/
+.gstack/

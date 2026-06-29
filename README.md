@@ -55,6 +55,125 @@ State is persisted in SQLite so jobs resume across restarts. The job queue is an
 serial queue (concurrency 1) — repos share one on-disk clone, so serialization avoids
 working-tree races. Swap in Redis/BullMQ if you need multi-repo parallelism.
 
+## Project Mode
+
+For complex multi-task issues, add the `ai-dev-project` label instead of `ai-dev`. This
+triggers **Project Mode**, which:
+
+1. Creates a durable project record in SQLite.
+2. Reads the issue and repository context (file tree, README).
+3. Generates a dependency-aware task plan using the LLM as Task Master.
+4. Saves tasks with dependencies and subtasks.
+5. Posts a persistent, live-updating status comment on the parent issue.
+6. **Waits for `/ai-dev approve`** before executing any tasks.
+
+### Commands (via issue comments)
+
+| Command | Effect |
+| --- | --- |
+| `/ai-dev approve` | Start task execution (after plan review) |
+| `/ai-dev status` | Refresh the status comment |
+| `/ai-dev pause` | Pause execution (running tasks finish, no new ones start) |
+| `/ai-dev resume` | Resume a paused project |
+| `/ai-dev retry <task-number>` | Retry a failed task (1-indexed) |
+| `/ai-dev cancel` | Cancel the project |
+
+### Configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PROJECT_MODE_ENABLED` | `false` | Enable Project Mode |
+| `PROJECT_LABEL` | `ai-dev-project` | Label that triggers Project Mode |
+| `PROJECT_MAX_TASKS` | `50` | Maximum tasks per project plan |
+| `TASK_MASTER_CMD` | `""` | External Task Master command (empty = use LLM directly) |
+
+### Execution engine (Claude Code)
+
+After approval, the execution engine runs each task sequentially using Claude Code in
+headless mode, routed to your local oMLX server:
+
+1. Picks the next dependency-ready task.
+2. Fetches latest default branch, creates a fresh git worktree + isolated branch.
+3. Runs Claude Code headlessly with a sanitized environment (no secrets, no GitHub keys).
+4. Independently validates the diff (file count, size, forbidden paths, deletion limits).
+5. Runs the configured test command independently (never trusts Claude Code's claim).
+6. Retries with the exact failure output on local validation failure.
+7. Commits and pushes through ai-dev, opens one PR per task.
+8. Monitors GitHub Actions CI; retries CI failures using the logs.
+9. Merges the PR after CI passes.
+10. Marks the task complete and starts the next one.
+11. Posts a final report after all tasks finish.
+12. Recovers safely after restart (detects existing branches and PRs).
+
+#### Execution engine configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CLAUDE_CODE_BIN` | `claude` | Path to Claude Code binary |
+| `CLAUDE_CODE_TIMEOUT_MS` | `900000` | Per-task timeout (15 min) |
+| `CLAUDE_CODE_MAX_RETRIES` | `3` | Max code-generation retries per task |
+| `CLAUDE_CODE_CI_MAX_RETRIES` | `3` | Max CI fix attempts per task |
+| `CLAUDE_CODE_MAX_CHANGED_FILES` | `30` | Max files changed per task |
+| `CLAUDE_CODE_MAX_DIFF_BYTES` | `500000` | Max diff size in bytes |
+| `CLAUDE_CODE_MAX_NET_DELETIONS` | `500` | Max net deletions (0=no limit) |
+| `CLAUDE_CODE_PRESERVE_FAILED_WORKTREES` | `true` | Keep failed worktrees for debugging |
+| `CLAUDE_CODE_ALLOW_DEPLOY_EDITS` | `false` | Allow Dockerfile/docker-compose edits |
+| `CLAUDE_CODE_TEST_CMD` | `""` | Test command to run after Claude Code |
+| `CLAUDE_CODE_WORKTREE_DIR` | `data/worktrees` | Worktree base directory |
+
+#### Security model
+
+- Claude Code runs with a **sanitized environment**: no GitHub App key, webhook secret,
+  deploy hook URL, SSH keys, or Docker socket.
+- Claude Code is routed to oMLX via `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`.
+- Workflow edits (`.github/workflows/`) are **always blocked** in project mode.
+- Deployment file edits require `CLAUDE_CODE_ALLOW_DEPLOY_EDITS=true`.
+- CI is **required** for project mode merges (no merge-without-CI).
+- Failed worktrees are preserved for debugging by default.
+- ai-dev independently validates diffs and runs tests; it never trusts Claude Code's output.
+- The Docker image runs as a non-root user.
+
+#### Compatibility check
+
+Verify that Claude Code can reach oMLX and the configured model before enabling:
+
+```bash
+npm run check:claude-code
+```
+
+This verifies: binary exists, oMLX reachable, model available, real tool call succeeds,
+secret isolation is correct.
+
+### GitHub App changes for Project Mode
+
+Add to the App's event subscriptions: **Issue comment** (required for `/ai-dev` commands).
+
+### Architecture
+
+```
+src/
+  agent/
+    projectOrchestrator.ts   state machine: plan → approve → execute → complete
+    claudeCodeExecutor.ts    execution engine: worktrees, Claude Code, validation, CI, merge
+    projectProgress.ts       persistent status comment on parent issue
+    projectCommands.ts       /ai-dev command parser
+    taskMaster.ts            dependency-aware plan generation (via LLM)
+  storage/
+    projectDb.ts             SQLite migrations (projects + project_tasks tables)
+    projectState.ts          project/task CRUD, dependency resolution, next-task selection
+  scripts/
+    check-claude-code.ts     compatibility check for Claude Code + oMLX
+```
+
+### Agent Teams (experimental)
+
+The `TaskExecutor` interface in `src/types.ts` is pluggable. The default
+`ClaudeCodeTaskExecutor` runs tasks sequentially. For parallel execution across multiple
+agents, register a custom executor with `registerTaskExecutor()`. This is optional and
+experimental — sequential headless execution is the stable default.
+
+---
+
 ## Model routing
 
 Rule-based, no LLM (`src/router/router.ts`):
@@ -86,7 +205,7 @@ Create a GitHub App (Settings → Developer settings → GitHub Apps):
 
 - **Permissions (repository):** Contents: Read & write, Pull requests: Read & write,
   Issues: Read & write, Actions: Read-only, Checks: Read-only, Metadata: Read-only.
-- **Subscribe to events:** Issues, Workflow run. (Check suite optional.)
+- **Subscribe to events:** Issues, Workflow run, Issue comment (for Project Mode commands). (Check suite optional.)
 - **Webhook URL:** `https://<your-hostname>/api/github/webhooks`
 - **Webhook secret:** set one and copy it into `GITHUB_WEBHOOK_SECRET`.
 - Generate a **private key** (.pem) and install the App on the repo(s).
@@ -128,6 +247,10 @@ Copy `.env.example` to `.env` and fill it in. Key settings:
   `GET /v1/models`). Currently all set to `Qwen3.6-35B-A3B-MLX-8bit` (single model).
 - `LMSTUDIO_API_KEY` — required Bearer token for oMLX.
 - `COOLIFY_DEPLOY_HOOK_URL` — optional; POSTed after a successful merge.
+- `PROJECT_MODE_ENABLED` — `false` by default. Set to `true` to enable Project Mode.
+- `PROJECT_LABEL` — label that triggers Project Mode (`ai-dev-project`).
+- `PROJECT_MAX_TASKS` — max tasks per project plan (default 50).
+- `TASK_MASTER_CMD` — external Task Master binary (empty = use LLM directly for planning).
 
 ## Run locally
 
