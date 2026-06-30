@@ -2,6 +2,7 @@ import { config, isRepoAllowed, isUserAllowed } from "../config.js";
 import {
   ProjectState,
   ProjectTaskState,
+  PhaseState,
   PROJECT_TERMINAL_STATES,
   type Project,
   type ProjectCommand,
@@ -22,10 +23,18 @@ import {
   isProjectSuccessful,
   getProjectTaskByIndex,
   updateProjectTask,
+  createPhase,
+  listPhases,
+  setPhaseState,
+  getNextPendingPhase,
+  isAllPhasesComplete,
+  getRunningPhase,
+  deleteProjectTasks,
 } from "../storage/projectState.js";
 import { octokitForRepo, type RepoClient } from "../github/app.js";
 import { comment, getIssue } from "../github/repo.js";
 import { generateTaskPlan } from "./taskMaster.js";
+import { generatePhases } from "./epicPlanner.js";
 import { reportProjectProgress } from "./projectProgress.js";
 import {
   ClaudeCodeTaskExecutor,
@@ -188,6 +197,29 @@ export function resumeActiveProjects(): void {
 // Internal orchestration
 // ---------------------------------------------------------------------------
 
+/** Threshold for issue body length to trigger phase mode. */
+const EPIC_BODY_THRESHOLD = 5000;
+/** Threshold for task count to trigger phase mode (if body is shorter). */
+const EPIC_TASK_THRESHOLD = 15;
+
+async function getRepoContext(octokit: RepoClient["octokit"], owner: string, repo: string): Promise<string> {
+  try {
+    const { data: tree } = await octokit.rest.git.getTree({
+      owner,
+      repo,
+      tree_sha: "HEAD",
+      recursive: "true",
+    });
+    const paths = tree.tree
+      .filter((t) => t.type === "blob")
+      .map((t) => t.path)
+      .slice(0, 80);
+    return `File tree (top 80):\n${paths.join("\n")}`;
+  } catch {
+    return "(could not retrieve file tree)";
+  }
+}
+
 async function planProject(projectId: number): Promise<void> {
   const project = getProjectById(projectId);
   if (!project || project.state !== ProjectState.PLANNING) return;
@@ -198,34 +230,93 @@ async function planProject(projectId: number): Promise<void> {
     const { octokit } = client;
 
     const issue = await getIssue(octokit, project.owner, project.repo, project.issueNumber);
+    const repoContext = await getRepoContext(octokit, project.owner, project.repo);
 
-    // Gather basic repo context (file tree at root, README if available)
-    let repoContext = "";
-    try {
-      const { data: tree } = await octokit.rest.git.getTree({
-        owner: project.owner,
-        repo: project.repo,
-        tree_sha: "HEAD",
-        recursive: "true",
-      });
-      const paths = tree.tree
-        .filter((t) => t.type === "blob")
-        .map((t) => t.path)
-        .slice(0, 200);
-      repoContext = `File tree (top 200):\n${paths.join("\n")}`;
-    } catch {
-      repoContext = "(could not retrieve file tree)";
+    const issueBody = issue.body || "";
+    const isEpicSized = issueBody.length > EPIC_BODY_THRESHOLD;
+
+    // Attempt phase planning for epic-sized issues
+    if (isEpicSized && config.project.planViaClaudeCode) {
+      try {
+        const phases = await generatePhases({
+          issueTitle: issue.title,
+          issueBody: issueBody,
+          repoContext,
+        });
+
+        if (phases.length > 1) {
+          // Save phases to DB
+          for (let i = 0; i < phases.length; i++) {
+            createPhase({
+              projectId,
+              phaseIndex: i,
+              title: phases[i].title,
+              description: phases[i].description,
+            });
+          }
+
+          updateProject(projectId, {
+            state: ProjectState.AWAITING_APPROVAL,
+            plan: JSON.stringify({ phases }),
+          });
+
+          broadcastEvent("project_update", { projectId, state: ProjectState.AWAITING_APPROVAL, action: "phase_planned" });
+
+          await reportProjectProgress(octokit, projectId);
+          logger.info({ projectId, phases: phases.length }, "project phase-planned; awaiting approval");
+          return;
+        }
+        // If only 1 phase returned, fall through to direct task planning
+        logger.info({ projectId }, "epic planner returned single phase; falling back to direct task plan");
+      } catch (err) {
+        logger.warn(
+          { projectId, err: (err as Error).message },
+          "phase generation failed; falling back to direct task planning",
+        );
+      }
     }
 
+    // Direct task planning (non-phased or fallback)
     const plan = await generateTaskPlan({
       jobId: null,
       issueTitle: issue.title,
-      issueBody: issue.body,
+      issueBody: issueBody,
       repoContext,
       pro: true,
     });
 
-    // Persist tasks
+    // If the planner returns too many tasks AND Claude Code is available, try phasing
+    if (plan.tasks.length > EPIC_TASK_THRESHOLD && config.project.planViaClaudeCode) {
+      try {
+        const phases = await generatePhases({
+          issueTitle: issue.title,
+          issueBody: issueBody,
+          repoContext,
+        });
+        if (phases.length > 1) {
+          for (let i = 0; i < phases.length; i++) {
+            createPhase({
+              projectId,
+              phaseIndex: i,
+              title: phases[i].title,
+              description: phases[i].description,
+            });
+          }
+          updateProject(projectId, {
+            state: ProjectState.AWAITING_APPROVAL,
+            plan: JSON.stringify({ phases }),
+          });
+          broadcastEvent("project_update", { projectId, state: ProjectState.AWAITING_APPROVAL, action: "phase_planned" });
+          await reportProjectProgress(octokit, projectId);
+          logger.info({ projectId, phases: phases.length }, "task plan was large; switched to phase mode");
+          return;
+        }
+      } catch (err) {
+        logger.warn({ projectId, err: (err as Error).message }, "fallback phase generation failed; using direct plan");
+      }
+    }
+
+    // Persist tasks directly
     for (let i = 0; i < plan.tasks.length; i++) {
       const entry = plan.tasks[i];
       createProjectTask({
@@ -288,14 +379,20 @@ async function approveProject(projectId: number): Promise<void> {
       project.owner,
       project.repo,
       project.issueNumber,
-      "ai-dev project: approved. Starting task execution…",
+      "ai-dev project: approved. Starting execution…",
     );
     await reportProjectProgress(client.octokit, projectId);
   } catch {
     /* best-effort */
   }
 
-  await advanceProject(projectId);
+  // If project has phases, start phase advancement; otherwise advance tasks directly
+  const phases = listPhases(projectId);
+  if (phases.length > 0) {
+    await advancePhase(projectId);
+  } else {
+    await advanceProject(projectId);
+  }
 }
 
 async function pauseProject(projectId: number): Promise<void> {
@@ -343,7 +440,14 @@ async function resumeProject(projectId: number): Promise<void> {
     /* best-effort */
   }
 
-  await advanceProject(projectId);
+  // If phased and no current tasks exist (between phases), advance phase
+  const phases = listPhases(projectId);
+  const tasks = listProjectTasks(projectId);
+  if (phases.length > 0 && tasks.length === 0) {
+    await advancePhase(projectId);
+  } else {
+    await advanceProject(projectId);
+  }
 }
 
 async function cancelProject(projectId: number): Promise<void> {
@@ -419,6 +523,101 @@ async function refreshProjectStatus(projectId: number): Promise<void> {
 }
 
 /**
+ * Advance a phased project: plan and execute the next pending phase.
+ * Between phases, re-fetches the repo file tree for accurate context.
+ */
+async function advancePhase(projectId: number): Promise<void> {
+  const project = getProjectById(projectId);
+  if (!project || project.state !== ProjectState.RUNNING) return;
+
+  // Check if all phases are done
+  if (isAllPhasesComplete(projectId)) {
+    await finalizeProject(projectId);
+    return;
+  }
+
+  const nextPhase = getNextPendingPhase(projectId);
+  if (!nextPhase) {
+    // No pending phases — check if a running phase exists (tasks in progress)
+    const running = getRunningPhase(projectId);
+    if (running) {
+      // Phase is RUNNING, tasks are being processed via advanceProject
+      return;
+    }
+    // All done
+    await finalizeProject(projectId);
+    return;
+  }
+
+  // Set phase to RUNNING
+  setPhaseState(nextPhase.id, PhaseState.RUNNING);
+  broadcastEvent("project_update", { projectId, action: "phase_started", phaseIndex: nextPhase.phaseIndex });
+  logger.info({ projectId, phaseIndex: nextPhase.phaseIndex, phaseTitle: nextPhase.title }, "starting phase");
+
+  // Clear oMLX caches between phases to ensure memory headroom
+  try {
+    const { clearOmlxCaches } = await import("../omlx/monitor.js");
+    await clearOmlxCaches();
+  } catch { /* non-fatal */ }
+
+  // Clear previous phase's tasks
+  deleteProjectTasks(projectId);
+
+  // Re-fetch repo context between phases
+  let repoContext = "";
+  try {
+    const client = await octokitForRepo(project.owner, project.repo);
+    repoContext = await getRepoContext(client.octokit, project.owner, project.repo);
+  } catch {
+    repoContext = "(could not retrieve file tree)";
+  }
+
+  // Generate tasks for this phase
+  try {
+    const plan = await generateTaskPlan({
+      jobId: null,
+      issueTitle: `${project.title} — Phase ${nextPhase.phaseIndex + 1}: ${nextPhase.title}`,
+      issueBody: nextPhase.description,
+      repoContext,
+      pro: true,
+    });
+
+    // Persist tasks for this phase
+    for (let i = 0; i < plan.tasks.length; i++) {
+      const entry = plan.tasks[i];
+      createProjectTask({
+        projectId,
+        taskIndex: i,
+        title: entry.title,
+        description: entry.description,
+        dependencies: entry.dependencies,
+        subtasks: entry.subtasks,
+      });
+    }
+
+    logger.info({ projectId, phaseIndex: nextPhase.phaseIndex, tasks: plan.tasks.length }, "phase tasks generated");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error({ projectId, phaseIndex: nextPhase.phaseIndex, err: message }, "phase task generation failed");
+    setPhaseState(nextPhase.id, PhaseState.FAILED);
+    updateProject(projectId, { lastError: `Phase ${nextPhase.phaseIndex + 1} planning failed: ${message}` });
+    // Continue to next phase (skip failed one)
+    await advancePhase(projectId);
+    return;
+  }
+
+  // Update progress and start task execution
+  try {
+    const client = await octokitForRepo(project.owner, project.repo);
+    await reportProjectProgress(client.octokit, projectId);
+  } catch {
+    /* best-effort */
+  }
+
+  await advanceProject(projectId);
+}
+
+/**
  * Advance the project: pick next ready task, execute sequentially (one at a time).
  * After each task completes (or fails), re-evaluate and continue.
  */
@@ -426,38 +625,106 @@ async function advanceProject(projectId: number): Promise<void> {
   const project = getProjectById(projectId);
   if (!project || project.state !== ProjectState.RUNNING) return;
 
-  // Check for completion
+  const phases = listPhases(projectId);
+  const isPhased = phases.length > 0;
+
+  // If phased project has no tasks, advance to next phase
+  const allTasks = listProjectTasks(projectId);
+  if (isPhased && allTasks.length === 0) {
+    await advancePhase(projectId);
+    return;
+  }
+
+  // Check for completion of current tasks
   if (isProjectComplete(projectId)) {
-    await finalizeProject(projectId);
+    if (isPhased) {
+      // Current phase's tasks are done — mark phase as complete and advance
+      const runningPhase = getRunningPhase(projectId);
+      if (runningPhase) {
+        const success = isProjectSuccessful(projectId);
+        setPhaseState(runningPhase.id, success ? PhaseState.COMPLETED : PhaseState.FAILED);
+        logger.info({ projectId, phaseIndex: runningPhase.phaseIndex, success }, "phase completed");
+      }
+      await advancePhase(projectId);
+    } else {
+      await finalizeProject(projectId);
+    }
     return;
   }
 
   const readyTasks = getNextReadyTasks(projectId);
   if (readyTasks.length === 0) {
     // Check if we're deadlocked: no READY tasks, no RUNNING tasks, but BLOCKED tasks remain.
-    // This means failed dependencies are blocking progress. Skip blocked tasks to unblock.
     const allTasks = listProjectTasks(projectId);
     const hasRunning = allTasks.some(t => t.state === ProjectTaskState.RUNNING);
     if (hasRunning) {
       logger.debug({ projectId }, "no ready tasks; waiting for running tasks to finish");
       return;
     }
+
     const blockedTasks = allTasks.filter(t => t.state === ProjectTaskState.BLOCKED);
+    const failedIndices = new Set(
+      allTasks.filter(t => t.state === ProjectTaskState.FAILED).map(t => t.taskIndex),
+    );
+
     if (blockedTasks.length > 0) {
-      // Deadlock: skip blocked tasks whose dependencies failed
+      // Only skip tasks that DIRECTLY depend on a failed task.
+      // Tasks blocked by other blocked tasks may become unblocked later.
+      let skippedAny = false;
       for (const bt of blockedTasks) {
-        setTaskState(bt.id, ProjectTaskState.SKIPPED);
-        updateProjectTask(bt.id, { lastError: "skipped: dependency task(s) failed" });
-        logger.info({ projectId, taskId: bt.id }, "skipped blocked task (failed dependencies)");
+        const deps = bt.dependencies ? JSON.parse(bt.dependencies) as number[] : [];
+        const hasFailedDep = deps.some(d => failedIndices.has(d));
+        if (hasFailedDep) {
+          setTaskState(bt.id, ProjectTaskState.SKIPPED);
+          updateProjectTask(bt.id, { lastError: `skipped: depends on failed task(s) ${deps.filter(d => failedIndices.has(d)).join(", ")}` });
+          logger.info({ projectId, taskId: bt.id, failedDeps: deps.filter(d => failedIndices.has(d)) }, "skipped task (direct dep failed)");
+          skippedAny = true;
+        }
       }
-      // Now check completion again
+
+      // After skipping direct dependents, try to promote remaining blocked tasks
+      if (skippedAny) {
+        const newReady = getNextReadyTasks(projectId);
+        if (newReady.length > 0) {
+          // More tasks became available — continue execution
+          await advanceProject(projectId);
+          return;
+        }
+      }
+
+      // Still deadlocked after targeted skips — skip all remaining blocked
+      const stillBlocked = listProjectTasks(projectId).filter(t => t.state === ProjectTaskState.BLOCKED);
+      for (const bt of stillBlocked) {
+        setTaskState(bt.id, ProjectTaskState.SKIPPED);
+        updateProjectTask(bt.id, { lastError: "skipped: no path to completion" });
+      }
+
+      // Check completion
       if (isProjectComplete(projectId)) {
-        await finalizeProject(projectId);
+        if (isPhased) {
+          const runningPhase = getRunningPhase(projectId);
+          if (runningPhase) {
+            const success = isProjectSuccessful(projectId);
+            setPhaseState(runningPhase.id, success ? PhaseState.COMPLETED : PhaseState.FAILED);
+          }
+          await advancePhase(projectId);
+        } else {
+          await finalizeProject(projectId);
+        }
       }
     } else {
       // No blocked, no ready, no running — should be complete
       if (isProjectComplete(projectId)) {
-        await finalizeProject(projectId);
+        if (isPhased) {
+          const runningPhase = getRunningPhase(projectId);
+          if (runningPhase) {
+            const success = isProjectSuccessful(projectId);
+            setPhaseState(runningPhase.id, success ? PhaseState.COMPLETED : PhaseState.FAILED);
+          }
+          await advancePhase(projectId);
+        } else {
+          await finalizeProject(projectId);
+        }
       }
     }
     return;
@@ -521,11 +788,23 @@ async function finalizeProject(projectId: number): Promise<void> {
   const project = getProjectById(projectId);
   if (!project) return;
 
-  const success = isProjectSuccessful(projectId);
+  const phases = listPhases(projectId);
+  const isPhased = phases.length > 0;
+
+  // For phased projects, check overall success across phases
+  let success: boolean;
+  if (isPhased) {
+    success = phases.every(
+      (p) => p.state === PhaseState.COMPLETED || p.state === PhaseState.SKIPPED,
+    );
+  } else {
+    success = isProjectSuccessful(projectId);
+  }
+
   const finalState = success ? ProjectState.COMPLETED : ProjectState.FAILED;
   setProjectState(projectId, finalState);
   broadcastEvent("project_update", { projectId, state: finalState, action: "finalized", success });
-  logger.info({ projectId, success }, "project completed");
+  logger.info({ projectId, success, phased: isPhased }, "project completed");
 
   try {
     const client = await octokitForRepo(project.owner, project.repo);

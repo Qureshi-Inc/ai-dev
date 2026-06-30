@@ -6,6 +6,17 @@ import type { Request, Response } from "express";
 // Data access helpers (raw SQL for the dashboard — read-only)
 // ---------------------------------------------------------------------------
 
+interface DashboardPhase {
+  id: number;
+  projectId: number;
+  phaseIndex: number;
+  title: string;
+  description: string;
+  state: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface DashboardProject {
   id: number;
   owner: string;
@@ -18,6 +29,7 @@ interface DashboardProject {
   createdAt: string;
   updatedAt: string;
   tasks: DashboardTask[];
+  phases: DashboardPhase[];
 }
 
 interface DashboardTask {
@@ -101,6 +113,19 @@ function getAllProjects(): DashboardProject[] {
       updated_at: string;
     }>;
 
+    const phaseRows = db
+      .prepare("SELECT * FROM project_phases WHERE project_id = ? ORDER BY phase_index ASC")
+      .all(r.id) as Array<{
+      id: number;
+      project_id: number;
+      phase_index: number;
+      title: string;
+      description: string;
+      state: string;
+      created_at: string;
+      updated_at: string;
+    }>;
+
     return {
       id: r.id,
       owner: r.owner,
@@ -128,6 +153,16 @@ function getAllProjects(): DashboardProject[] {
         worktreePath: t.worktree_path,
         createdAt: t.created_at,
         updatedAt: t.updated_at,
+      })),
+      phases: phaseRows.map((ph) => ({
+        id: ph.id,
+        projectId: ph.project_id,
+        phaseIndex: ph.phase_index,
+        title: ph.title,
+        description: ph.description,
+        state: ph.state,
+        createdAt: ph.created_at,
+        updatedAt: ph.updated_at,
       })),
     };
   });
@@ -638,10 +673,98 @@ a:hover{text-decoration:underline}
     html += '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="font-size:.8125rem;color:#71717a">Planning</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(planningModel) + '</span></div>';
     html += '<div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#71717a">Coding</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(codingModel) + ' (oMLX)</span></div>';
     html += '</div>';
-    // Progress
-    html += '<div style="margin-bottom:20px"><div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:.8125rem"><span style="color:#71717a">Progress</span><span style="color:#a1a1aa">' + done + '/' + total + ' tasks (' + pct + '%)</span></div>';
-    html += '<div class="proj-bar" style="height:6px"><div class="proj-fill" style="width:' + pct + '%"></div></div></div>';
+    // Status explanation + actions (prominent when paused/failed)
+    if (p.state === "PAUSED" || p.state === "FAILED" || p.state === "AWAITING_APPROVAL") {
+      var statusBg = p.state === "FAILED" ? "#1c1017" : p.state === "PAUSED" ? "#1a1500" : "#0f1a2e";
+      var statusBorder = p.state === "FAILED" ? "#7f1d1d" : p.state === "PAUSED" ? "#854d0e" : "#1d4ed8";
+      var statusIcon = p.state === "FAILED" ? "&#10060;" : p.state === "PAUSED" ? "&#9208;" : "&#9203;";
+      var statusMsg = p.state === "FAILED" ? "Project failed" : p.state === "PAUSED" ? "Project is paused" : "Awaiting your approval";
+      var statusDetail = p.lastError ? p.lastError : p.state === "PAUSED" ? "Paused by user or system. Resume to continue execution." : p.state === "AWAITING_APPROVAL" ? "Review the plan above, then approve to start execution." : "An error occurred during execution.";
+      html += '<div style="background:' + statusBg + ';border:1px solid ' + statusBorder + ';border-radius:10px;padding:16px;margin-bottom:20px">';
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:1.2rem">' + statusIcon + '</span><span style="font-size:.9375rem;font-weight:600;color:#e4e4e7">' + statusMsg + '</span></div>';
+      html += '<p style="font-size:.8125rem;color:#a1a1aa;margin-bottom:12px">' + escapeHtml(statusDetail).slice(0, 300) + '</p>';
+      html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
+      if (p.state === "AWAITING_APPROVAL") html += '<button class="action-btn action-btn-approve" data-action="approve" data-pid="' + p.id + '">&#10003; Approve &amp; Start</button>';
+      if (p.state === "PAUSED") html += '<button class="action-btn action-btn-resume" data-action="resume" data-pid="' + p.id + '">&#9654; Resume</button>';
+      if (p.state === "FAILED") html += '<button class="action-btn action-btn-resume" data-action="resume" data-pid="' + p.id + '">&#8635; Retry</button>';
+      html += '<button class="action-btn action-btn-cancel" data-action="cancel" data-pid="' + p.id + '">Cancel</button>';
+      html += '</div></div>';
+    }
+    // Phase progress (if phased project)
+    var phases = p.phases || [];
+    if (phases.length > 0) {
+      var completedPhases = 0, runningPhase = null;
+      for (var i = 0; i < phases.length; i++) {
+        if (phases[i].state === "COMPLETED") completedPhases++;
+        if (phases[i].state === "RUNNING" && !runningPhase) runningPhase = phases[i];
+      }
+      var phaseProgress = runningPhase && total > 0 ? done / total : 0;
+      var overallPct = Math.round(((completedPhases + phaseProgress) / phases.length) * 100);
+      html += '<div style="margin-bottom:20px"><div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:.8125rem"><span style="color:#71717a">Overall Progress</span><span style="color:#a1a1aa">' + overallPct + '% (Phase ' + (completedPhases + (runningPhase ? 1 : 0)) + ' of ' + phases.length + ')</span></div>';
+      html += '<div class="proj-bar" style="height:6px"><div class="proj-fill" style="width:' + overallPct + '%"></div></div></div>';
+      html += '<section class="section"><h2 class="section-title">Phases</h2>';
+      for (var i = 0; i < phases.length; i++) {
+        var ph = phases[i];
+        var phBadgeColor = ph.state === "RUNNING" ? "#1d4ed8" : ph.state === "COMPLETED" ? "#166534" : ph.state === "FAILED" ? "#991b1b" : "#27272a";
+        var phTextColor = ph.state === "RUNNING" ? "#93c5fd" : ph.state === "COMPLETED" ? "#4ade80" : ph.state === "FAILED" ? "#fca5a5" : "#a1a1aa";
+        var phIcon = ph.state === "RUNNING" ? "&#9679;" : ph.state === "COMPLETED" ? "&#10003;" : ph.state === "FAILED" ? "&#10005;" : "&#9675;";
+        var phOpen = (runningPhase && ph.phaseIndex === runningPhase.phaseIndex) ? " open" : "";
+        var phBorderLeft = ph.state === "RUNNING" ? "border-left:3px solid #3b82f6;" : ph.state === "COMPLETED" ? "border-left:3px solid #22c55e;" : ph.state === "FAILED" ? "border-left:3px solid #ef4444;" : "border-left:3px solid #3f3f46;";
+        html += '<details style="margin-bottom:8px"' + phOpen + '><summary style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:#18181b;border:1px solid #27272a;border-radius:10px;cursor:pointer;list-style:none;min-height:44px;' + phBorderLeft + '">';
+        html += '<span style="color:' + phTextColor + ';font-size:1rem">' + phIcon + '</span>';
+        html += '<div style="flex:1"><span style="font-size:.875rem;color:#e4e4e7;font-weight:600">Phase ' + (ph.phaseIndex + 1) + ': ' + escapeHtml(ph.title) + '</span>';
+        // Show task count for this phase if running
+        if (ph.state === "RUNNING" && p.tasks.length > 0) {
+          var phaseDone = 0; for (var ti = 0; ti < p.tasks.length; ti++) { if (p.tasks[ti].state === "COMPLETED" || p.tasks[ti].state === "SKIPPED") phaseDone++; }
+          html += '<div style="font-size:.75rem;color:#71717a;margin-top:2px">' + phaseDone + '/' + p.tasks.length + ' tasks</div>';
+        }
+        html += '</div>';
+        html += '<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:.6875rem;font-weight:700;background:' + phBadgeColor + ';color:' + phTextColor + '">' + ph.state + '</span>';
+        html += '</summary>';
+        // Phase expanded content
+        html += '<div style="padding:14px 16px;background:#0f0f12;border:1px solid #27272a;border-top:none;border-radius:0 0 10px 10px">';
+        // Description
+        html += '<div style="font-size:.8125rem;color:#a1a1aa;margin-bottom:12px;white-space:pre-wrap">' + escapeHtml(ph.description) + '</div>';
+        // Tasks for this phase (if it's the running phase)
+        if (ph.state === "RUNNING" && p.tasks.length > 0) {
+          html += '<div style="border-top:1px solid #27272a;padding-top:12px;margin-top:8px">';
+          html += '<div style="font-size:.75rem;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Tasks</div>';
+          for (var ti = 0; ti < p.tasks.length; ti++) {
+            var t = p.tasks[ti];
+            var tIcon = t.state === "RUNNING" ? '<span style="color:#60a5fa">&#9679;</span>' : t.state === "COMPLETED" ? '<span style="color:#4ade80">&#10003;</span>' : t.state === "FAILED" ? '<span style="color:#f87171">&#10005;</span>' : t.state === "SKIPPED" ? '<span style="color:#71717a">&#8594;</span>' : '<span style="color:#52525b">&#9675;</span>';
+            var tBg = t.state === "RUNNING" ? "background:#0f1a2e;" : "";
+            var tColor = t.state === "RUNNING" ? "color:#e4e4e7;font-weight:500;" : "color:#a1a1aa;";
+            html += '<div data-nav="#task/' + t.id + '" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:6px;cursor:pointer;min-height:40px;' + tBg + '" class="task-row">';
+            html += tIcon;
+            html += '<span style="flex:1;font-size:.8125rem;' + tColor + '">' + (t.taskIndex + 1) + '. ' + escapeHtml(t.title) + '</span>';
+            if (t.prNumber) html += '<a href="https://github.com/' + escapeHtml(p.owner) + '/' + escapeHtml(p.repo) + '/pull/' + t.prNumber + '" target="_blank" rel="noopener" style="color:#60a5fa;font-size:.75rem">PR #' + t.prNumber + '</a>';
+            if (t.state === "RUNNING") html += '<span style="color:#60a5fa;font-size:.6875rem">' + elapsed(t.updatedAt) + '</span>';
+            if (t.state === "FAILED") html += '<span style="color:#f87171;font-size:.6875rem">failed</span>';
+            html += '</div>';
+            if (t.lastError && (t.state === "FAILED" || t.state === "SKIPPED")) html += '<div style="font-size:.75rem;color:#f87171;padding:4px 10px 4px 36px;margin-bottom:4px">' + escapeHtml(t.lastError).slice(0, 150) + '</div>';
+          }
+          html += '</div>';
+        }
+        // For completed phases, show summary
+        if (ph.state === "COMPLETED") {
+          html += '<div style="border-top:1px solid #27272a;padding-top:8px;margin-top:8px;font-size:.75rem;color:#4ade80">&#10003; All tasks completed and merged</div>';
+        }
+        if (ph.state === "FAILED") {
+          html += '<div style="border-top:1px solid #27272a;padding-top:8px;margin-top:8px;font-size:.75rem;color:#f87171">&#10005; Phase failed — some tasks could not complete</div>';
+        }
+        html += '</div></details>';
+      }
+      html += '</section>';
+    } else {
+      // Non-phased: show simple progress
+      html += '<div style="margin-bottom:20px"><div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:.8125rem"><span style="color:#71717a">Progress</span><span style="color:#a1a1aa">' + done + '/' + total + ' tasks (' + pct + '%)</span></div>';
+      html += '<div class="proj-bar" style="height:6px"><div class="proj-fill" style="width:' + pct + '%"></div></div></div>';
+    }
     // Task list grouped by state
+    if (phases.length > 0 && p.tasks.length > 0) {
+      var currentPhaseTitle = runningPhase ? runningPhase.title : "Current Phase";
+      html += '<section class="section"><h2 class="section-title">Tasks: ' + escapeHtml(currentPhaseTitle) + '</h2></section>';
+    }
     var groups = [
       { label: "Running", states: ["RUNNING", "IMPLEMENTING", "CI_RUNNING"] },
       { label: "Failed", states: ["FAILED"] },

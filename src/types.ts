@@ -193,6 +193,31 @@ export interface TaskExecutor {
   canExecute(task: ProjectTask): boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Phase Mode (Epic Planner)
+// ---------------------------------------------------------------------------
+
+/** Lifecycle states for project phases. */
+export enum PhaseState {
+  PENDING = "PENDING",
+  RUNNING = "RUNNING",
+  COMPLETED = "COMPLETED",
+  FAILED = "FAILED",
+  SKIPPED = "SKIPPED",
+}
+
+/** A phase within a phased (epic) project. */
+export interface ProjectPhase {
+  id: number;
+  projectId: number;
+  phaseIndex: number;
+  title: string;
+  description: string;
+  state: PhaseState;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** Supported project commands from issue comments. */
 export type ProjectCommand =
   | { type: "approve" }

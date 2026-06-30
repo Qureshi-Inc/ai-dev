@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { config } from "../config.js";
 import { TaskType, type TaskPlan, type TaskPlanEntry } from "../types.js";
 import { callModelJson, extractJson } from "../llm/client.js";
@@ -74,35 +76,110 @@ function buildPlanningPrompt(params: {
 }
 
 /**
- * Plan via Claude Code (Bedrock). Uses the host's Claude Code config which
- * has CLAUDE_CODE_USE_BEDROCK=1 and AWS credentials already set.
+ * Plan via Bedrock (Claude Opus) using the SDK directly.
+ * No Claude Code CLI wrapper — direct API call guarantees JSON response.
  */
-async function planViaClaudeCode(prompt: string): Promise<TaskPlan> {
-  logger.info("task master: using Claude Code (Bedrock) for planning");
+async function planViaBedrock(prompt: string): Promise<TaskPlan> {
+  logger.info("task master: using Bedrock (Claude Opus) for planning");
 
-  // Build env: inherit AWS/Bedrock vars from the host, plus Claude Code config.
+  const { AnthropicBedrock } = await import("@anthropic-ai/bedrock-sdk");
+
+  const client = new AnthropicBedrock({
+    awsRegion: process.env.AWS_REGION || "us-east-1",
+  });
+
+  const response = await client.messages.create({
+    model: "us.anthropic.claude-opus-4-6-v1",
+    max_tokens: 16000,
+    messages: [
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+    system: "You are a task planning AI. You MUST respond with ONLY a valid JSON object. No prose, no explanation, no code fences. Just the raw JSON.",
+  });
+
+  const text = response.content
+    .filter((block) => block.type === "text")
+    .map((block) => (block as unknown as { text: string }).text)
+    .join("");
+
+  if (!text) {
+    throw new Error("Bedrock returned empty response");
+  }
+
+  logger.info({ model: "claude-opus-4-6", chars: text.length }, "Bedrock planning response received");
+  return extractJson<TaskPlan>(text);
+}
+
+/**
+ * Plan via Task Master CLI. Writes a PRD file, runs task-master parse-prd,
+ * reads back generated tasks. Task Master uses claude-code provider (Bedrock/Opus).
+ * Returns shared context via .taskmaster/tasks/tasks.json that the executor can reference.
+ */
+async function planViaTaskMasterCli(params: {
+  issueTitle: string;
+  issueBody: string;
+  repoContext: string;
+  projectDir: string;
+}): Promise<TaskPlan> {
+  const { issueTitle, issueBody, repoContext, projectDir } = params;
+  logger.info("task master: using Task Master CLI (Bedrock) for planning");
+
+  // Ensure .taskmaster directory exists in the project
+  const tmDir = join(projectDir, ".taskmaster");
+  const docsDir = join(tmDir, "docs");
+  const tasksDir = join(tmDir, "tasks");
+  mkdirSync(docsDir, { recursive: true });
+  mkdirSync(tasksDir, { recursive: true });
+
+  // Write the PRD
+  const prd = [
+    `# ${issueTitle}`,
+    "",
+    issueBody,
+    "",
+    "## Repository Context",
+    "",
+    repoContext,
+    "",
+    "## Execution Constraints",
+    "",
+    "- Executor: Claude Code running headlessly (no human in the loop)",
+    "- Coding model: Qwen 3.6 35B (local, on Apple M2 Max 96GB via oMLX)",
+    "- Each task runs in an isolated git worktree with a fresh Claude Code session",
+    "- Each task produces exactly ONE pull request",
+    "- EVERY task MUST produce code changes — never create analysis-only tasks",
+    "- Do NOT create tasks that modify .github/workflows/",
+    "- Keep tasks small and focused — the 35B local model works best with clear instructions",
+    "- Include file paths in task descriptions when possible",
+  ].join("\n");
+
+  const prdPath = join(docsDir, "prd.txt");
+  writeFileSync(prdPath, prd);
+
+  // Build env for task-master (needs PATH with node 20, AWS creds for Bedrock)
   const env: Record<string, string> = {};
   const inheritKeys = [
     "HOME", "PATH", "USER", "LANG", "SHELL", "TMPDIR",
     "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
-    "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "CLAUDE_MODEL",
+    "CLAUDE_CODE_USE_BEDROCK", "NVM_DIR", "NVM_BIN",
   ];
   for (const key of inheritKeys) {
     if (process.env[key]) env[key] = process.env[key]!;
   }
-  env.CLAUDE_CODE_DISABLE_TELEMETRY = "1";
   env.NO_COLOR = "1";
 
-  // Use -p for the prompt argument. As root in Docker, skip --dangerously-skip-permissions
-  // (not allowed as root); Claude Code's --print mode doesn't need file permissions for
-  // pure text generation anyway.
-  const isRoot = process.getuid?.() === 0;
-  const args = isRoot
-    ? ["--print", "-p", prompt]
-    : ["--print", "--dangerously-skip-permissions", "-p", prompt];
-
-  const result = await run(config.claudeCode.bin, args, {
+  // Run task-master parse-prd
+  const tmBin = config.project.taskMasterCmd || "task-master";
+  const result = await run(tmBin, [
+    "parse-prd",
+    `--input=${prdPath}`,
+    `--num-tasks=${config.project.maxTasks}`,
+  ], {
+    cwd: projectDir,
     env,
     input: "",
     timeout: 300000,
@@ -110,23 +187,49 @@ async function planViaClaudeCode(prompt: string): Promise<TaskPlan> {
   });
 
   if (result.exitCode !== 0) {
-    logger.warn({ exitCode: result.exitCode, stderr: result.stderr.slice(0, 500) },
-      "Claude Code planning failed; falling back to oMLX");
-    throw new Error(`Claude Code exited ${result.exitCode}: ${result.stderr.slice(0, 200)}`);
+    throw new Error(`task-master parse-prd failed (exit ${result.exitCode}): ${result.stderr.slice(0, 300)}`);
   }
 
-  const text = result.stdout.trim();
-  if (!text) {
-    throw new Error("Claude Code returned empty response");
+  // Read generated tasks
+  const tasksFile = join(tasksDir, "tasks.json");
+  if (!existsSync(tasksFile)) {
+    throw new Error("task-master did not create tasks.json");
   }
 
-  return extractJson<TaskPlan>(text);
+  const tasksData = JSON.parse(readFileSync(tasksFile, "utf8")) as {
+    tasks?: Array<{
+      id: number;
+      title: string;
+      description: string;
+      dependencies: number[];
+      subtasks?: Array<{ title: string; description?: string }>;
+      priority?: string;
+      details?: string;
+    }>;
+  };
+
+  if (!tasksData.tasks || tasksData.tasks.length === 0) {
+    throw new Error("task-master produced no tasks");
+  }
+
+  // Convert to our TaskPlan format
+  const tasks: TaskPlanEntry[] = tasksData.tasks.map((t) => ({
+    title: t.title,
+    description: [
+      t.description,
+      t.details ? `\nImplementation details:\n${t.details}` : "",
+    ].join(""),
+    dependencies: t.dependencies || [],
+    subtasks: (t.subtasks || []).map(s => s.title || s.description || ""),
+  }));
+
+  logger.info({ tasks: tasks.length }, "Task Master CLI generated plan");
+  return { tasks };
 }
 
 /**
  * Generate a dependency-aware task plan for a project issue.
- * When PROJECT_PLAN_VIA_CLAUDE_CODE=true, uses Claude Code (Bedrock/Opus) for
- * higher-quality plans. Falls back to oMLX on failure.
+ * Priority order: Task Master CLI → Claude Code (Bedrock) → oMLX fallback.
  */
 export async function generateTaskPlan(params: {
   jobId: number | null;
@@ -134,18 +237,19 @@ export async function generateTaskPlan(params: {
   issueBody: string;
   repoContext: string;
   pro?: boolean;
+  projectDir?: string;
 }): Promise<TaskPlan> {
   const { issueTitle, issueBody, repoContext, pro } = params;
 
   let plan: TaskPlan | null = null;
 
-  // Try Claude Code (Bedrock) first if configured
+  // Priority 1: Bedrock (Claude Opus) direct API call — reliable JSON
   if (config.project.planViaClaudeCode) {
     try {
       const prompt = buildPlanningPrompt({ issueTitle, issueBody, repoContext });
-      plan = await planViaClaudeCode(prompt);
+      plan = await planViaBedrock(prompt);
     } catch (err) {
-      logger.warn({ err: (err as Error).message }, "Claude Code planning failed; falling back to oMLX");
+      logger.warn({ err: (err as Error).message }, "Bedrock planning failed; falling back to oMLX");
       plan = null;
     }
   }
@@ -205,7 +309,7 @@ export async function generateTaskPlan(params: {
     };
   }
 
-  // Validate and clamp
+  // Validate, clamp, and fix dependency chains
   const clamped = plan.tasks.slice(0, config.project.maxTasks);
   const validated: TaskPlanEntry[] = clamped.map((t, i) => ({
     title: t.title || `Task ${i + 1}`,
@@ -217,6 +321,27 @@ export async function generateTaskPlan(params: {
       ? t.subtasks.filter((s) => typeof s === "string")
       : [],
   }));
+
+  // Force task 0 to always be dependency-free (guarantees at least one task can start)
+  if (validated.length > 0) {
+    validated[0].dependencies = [];
+  }
+
+  // Limit dependency depth: no task should have more than 3 levels of transitive deps.
+  // This prevents a single failure from cascading across the entire plan.
+  // Also ensure at least 2 tasks are dependency-free if plan has 5+ tasks.
+  if (validated.length >= 5) {
+    const depFreeCount = validated.filter(t => t.dependencies.length === 0).length;
+    if (depFreeCount < 2) {
+      // Find the first task with deps that only depends on task 0, make it dep-free
+      for (let i = 1; i < validated.length; i++) {
+        if (validated[i].dependencies.length === 1 && validated[i].dependencies[0] === 0) {
+          validated[i].dependencies = [];
+          break;
+        }
+      }
+    }
+  }
 
   return { tasks: validated };
 }

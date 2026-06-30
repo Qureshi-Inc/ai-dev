@@ -123,7 +123,7 @@ function worktreePath(project: Project, taskIndex: number): string {
 }
 
 function taskBranchName(project: Project, taskIndex: number): string {
-  return `project/${project.issueNumber}/task-${taskIndex + 1}`;
+  return `project/${project.id}-${project.issueNumber}/task-${taskIndex + 1}`;
 }
 
 async function createWorktree(
@@ -132,6 +132,9 @@ async function createWorktree(
   branch: string,
   base: string,
 ): Promise<void> {
+  // Prune stale worktree references first
+  await run("git", ["-C", repoDir, "worktree", "prune"], { allowFailure: true });
+
   if (existsSync(wtPath)) {
     // Clean up stale worktree
     await run("git", ["-C", repoDir, "worktree", "remove", "--force", wtPath], { allowFailure: true });
@@ -337,7 +340,7 @@ export class ClaudeCodeTaskExecutor implements TaskExecutor {
     let taskCommentId: number | null = null;
     const postStatus = async (msg: string) => {
       try {
-        const totalTasks = (await import("../storage/projectState.js")).listProjectTasks(project.id).length;
+        const totalTasks = listProjectTasks(project.id).length;
         const body = `🤖 **Task ${task.taskIndex + 1}/${totalTasks}:** ${task.title}\n\n${msg}`;
         if (taskCommentId) {
           await client.octokit.rest.issues.updateComment({
@@ -351,6 +354,12 @@ export class ClaudeCodeTaskExecutor implements TaskExecutor {
         }
       } catch { /* best-effort */ }
     };
+
+    // Ensure oMLX has memory headroom before starting (clears caches if under pressure)
+    try {
+      const { ensureOmlxHeadroom } = await import("../omlx/monitor.js");
+      await ensureOmlxHeadroom();
+    } catch { /* non-fatal */ }
 
     await postStatus("⏳ Starting execution via Claude Code (oMLX)…");
 
@@ -490,7 +499,31 @@ export class ClaudeCodeTaskExecutor implements TaskExecutor {
       // No CI configured — merge directly (local validation already passed)
       log.info({ prNumber }, "no CI configured; merging after local validation");
       await postStatus(`ℹ️ No CI configured. Merging based on local validation.`);
-      const mergeNoCi = await mergePr(octokit, project.owner, project.repo, prNumber);
+      let mergeNoCi = await mergePr(octokit, project.owner, project.repo, prNumber);
+
+      // If merge fails due to conflicts, rebase on latest main and force-push
+      if (!mergeNoCi.merged && mergeNoCi.reason?.includes("conflict")) {
+        log.info({ prNumber }, "merge conflict detected; rebasing on latest main");
+        await run("git", ["-C", repoDir, "fetch", "--prune",
+          `https://x-access-token:${token}@github.com/${project.owner}/${project.repo}.git`,
+          "+refs/heads/*:refs/remotes/origin/*"]);
+        const rebaseResult = await run("git", ["-C", wtPath, "rebase", `origin/${base}`], { allowFailure: true });
+        if (rebaseResult.exitCode === 0) {
+          // Rebase succeeded — push and retry merge
+          await run("git", ["-C", wtPath, "push", "--force",
+            `https://x-access-token:${token}@github.com/${project.owner}/${project.repo}.git`,
+            `${branch}:${branch}`]);
+          const newSha = (await run("git", ["-C", wtPath, "rev-parse", "HEAD"])).stdout.trim();
+          updateProjectTask(task.id, { headSha: newSha });
+          // Wait a moment for GitHub to update
+          await sleep(3000);
+          mergeNoCi = await mergePr(octokit, project.owner, project.repo, prNumber);
+        } else {
+          // Rebase failed (real conflict) — abort and fail
+          await run("git", ["-C", wtPath, "rebase", "--abort"], { allowFailure: true });
+        }
+      }
+
       if (!mergeNoCi.merged) {
         throw new Error(`merge failed (no CI): ${mergeNoCi.reason ?? "unknown"}`);
       }
@@ -607,6 +640,17 @@ function buildTaskPrompt(project: Project, task: ProjectTask): string {
     ? `\n\nSubtasks:\n${subtasks.map((s, i) => `${i + 1}. ${s}`).join("\n")}`
     : "";
 
+  // Provide context from completed sibling tasks so this session knows what was already done
+  const allTasks = listProjectTasks(project.id);
+  const completedContext = allTasks
+    .filter(t => t.state === "COMPLETED" && t.taskIndex < task.taskIndex)
+    .map(t => `- Task ${t.taskIndex + 1}: ${t.title} (merged PR #${t.prNumber || "?"})`)
+    .join("\n");
+
+  const contextSection = completedContext
+    ? `\n\n## Already completed (do not redo)\n${completedContext}`
+    : "";
+
   return [
     `You are implementing task ${task.taskIndex + 1} of a multi-task project.`,
     ``,
@@ -614,6 +658,7 @@ function buildTaskPrompt(project: Project, task: ProjectTask): string {
     ``,
     task.description,
     subtaskList,
+    contextSection,
     ``,
     `## Rules`,
     `- Implement ONLY this task. Do not implement other tasks.`,

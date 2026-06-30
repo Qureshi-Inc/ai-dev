@@ -1,0 +1,86 @@
+# Build SocialPlanner MVP — Phase 1: Set up foundation and authentication
+
+Initialize the Next.js application with TypeScript and Tailwind CSS within the existing apps/socialplanner directory. Configure PostgreSQL with Prisma ORM including the User and Post models with all required fields, relationships, and indexes. Create and run the initial database migration.
+
+Implement authentication using Auth.js (NextAuth) with a credentials provider. Build registration and login pages with secure password hashing using bcrypt. Add session management, logout functionality, and middleware that redirects unauthenticated users to the login page. Ensure all API routes check authentication status.
+
+Create the Docker configuration including a Dockerfile, docker-compose.yml with web and PostgreSQL services, and .env.example with DATABASE_URL, AUTH_SECRET, and APP_URL. Add the GET /api/health endpoint that returns {"status": "ok"}. Set up the responsive application layout shell with navigation links for Dashboard, Calendar, All Posts, Create Post, and Log Out, including a collapsible mobile menu.
+
+## Repository Context
+
+File tree (top 80):
+.github/workflows/ci.yml
+.github/workflows/opencode.yml
+.gitignore
+README.md
+apps/socialplanner/next-env.d.ts
+apps/socialplanner/next.config.mjs
+apps/socialplanner/package-lock.json
+apps/socialplanner/package.json
+apps/socialplanner/postcss.config.js
+apps/socialplanner/src/app/api/posts/route.ts
+apps/socialplanner/src/app/globals.css
+apps/socialplanner/src/app/layout.tsx
+apps/socialplanner/src/app/page.tsx
+apps/socialplanner/src/app/posts/new/page.tsx
+apps/socialplanner/src/components/ConfirmDialog.tsx
+apps/socialplanner/src/components/Notification.tsx
+apps/socialplanner/src/components/PostForm.tsx
+apps/socialplanner/src/lib/auth.ts
+apps/socialplanner/src/lib/db.ts
+apps/socialplanner/src/lib/types.ts
+apps/socialplanner/tailwind.config.ts
+apps/socialplanner/tsconfig.json
+apps/socialplanner/tsconfig.tsbuildinfo
+apps/taskpulse/.dockerignore
+apps/taskpulse/Dockerfile
+apps/taskpulse/README.md
+apps/taskpulse/docker-compose.yml
+apps/taskpulse/jest.config.js
+apps/taskpulse/jest.setup.js
+apps/taskpulse/next-env.d.ts
+apps/taskpulse/next.config.mjs
+apps/taskpulse/package-lock.json
+apps/taskpulse/package.json
+apps/taskpulse/postcss.config.js
+apps/taskpulse/public/.gitkeep
+apps/taskpulse/src/app/ClientRoot.tsx
+apps/taskpulse/src/app/api/tasks/[id]/route.ts
+apps/taskpulse/src/app/api/tasks/route.ts
+apps/taskpulse/src/app/dashboard/page.tsx
+apps/taskpulse/src/app/globals.css
+apps/taskpulse/src/app/layout.tsx
+apps/taskpulse/src/app/page.tsx
+apps/taskpulse/src/app/tasks/page.tsx
+apps/taskpulse/src/components/Footer.tsx
+apps/taskpulse/src/components/Navbar.tsx
+apps/taskpulse/src/components/Sidebar.tsx
+apps/taskpulse/src/components/TaskForm.tsx
+apps/taskpulse/src/lib/db.ts
+apps/taskpulse/tailwind.config.ts
+apps/taskpulse/tests/api/tasks.test.ts
+apps/taskpulse/tests/components/Dashboard.test.tsx
+apps/taskpulse/tests/components/Footer.test.tsx
+apps/taskpulse/tests/components/Navbar.test.tsx
+apps/taskpulse/tests/components/Sidebar.test.tsx
+apps/taskpulse/tests/components/TaskForm.test.tsx
+apps/taskpulse/tests/components/TasksPage.test.tsx
+apps/taskpulse/tsconfig.json
+apps/taskpulse/tsconfig.tsbuildinfo
+index.html
+pricing.html
+product.html
+tests/test-docker-build.js
+tests/test-pages.js
+tests/test-workflow.js
+
+## Execution Constraints
+
+- Executor: Claude Code running headlessly (no human in the loop)
+- Coding model: Qwen 3.6 35B (local, on Apple M2 Max 96GB via oMLX)
+- Each task runs in an isolated git worktree with a fresh Claude Code session
+- Each task produces exactly ONE pull request
+- EVERY task MUST produce code changes — never create analysis-only tasks
+- Do NOT create tasks that modify .github/workflows/
+- Keep tasks small and focused — the 35B local model works best with clear instructions
+- Include file paths in task descriptions when possible

@@ -3,10 +3,12 @@ import "./projectDb.js"; // ensure project tables exist
 import {
   ProjectState,
   ProjectTaskState,
+  PhaseState,
   PROJECT_TERMINAL_STATES,
   PROJECT_TASK_TERMINAL_STATES,
   type Project,
   type ProjectTask,
+  type ProjectPhase,
 } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +68,17 @@ function rowToProject(row: ProjectRow): Project {
   };
 }
 
+interface PhaseRow {
+  id: number;
+  project_id: number;
+  phase_index: number;
+  title: string;
+  description: string;
+  state: string;
+  created_at: string;
+  updated_at: string;
+}
+
 function rowToTask(row: TaskRow): ProjectTask {
   return {
     id: row.id,
@@ -84,6 +97,19 @@ function rowToTask(row: TaskRow): ProjectTask {
     retryCount: row.retry_count ?? 0,
     ciRetryCount: row.ci_retry_count ?? 0,
     worktreePath: row.worktree_path ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToPhase(row: PhaseRow): ProjectPhase {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    phaseIndex: row.phase_index,
+    title: row.title,
+    description: row.description,
+    state: row.state as PhaseState,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -364,4 +390,82 @@ export function isProjectSuccessful(projectId: number): boolean {
     (t) =>
       t.state === ProjectTaskState.COMPLETED || t.state === ProjectTaskState.SKIPPED,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Phase CRUD
+// ---------------------------------------------------------------------------
+
+export function createPhase(params: {
+  projectId: number;
+  phaseIndex: number;
+  title: string;
+  description: string;
+}): ProjectPhase {
+  const ts = now();
+  const info = db
+    .prepare(
+      `INSERT INTO project_phases (project_id, phase_index, title, description, state, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      params.projectId,
+      params.phaseIndex,
+      params.title,
+      params.description,
+      PhaseState.PENDING,
+      ts,
+      ts,
+    );
+  const row = db.prepare("SELECT * FROM project_phases WHERE id = ?").get(Number(info.lastInsertRowid)) as PhaseRow | undefined;
+  if (!row) throw new Error("failed to create phase");
+  return rowToPhase(row);
+}
+
+export function listPhases(projectId: number): ProjectPhase[] {
+  const rows = db
+    .prepare("SELECT * FROM project_phases WHERE project_id = ? ORDER BY phase_index ASC")
+    .all(projectId) as PhaseRow[];
+  return rows.map(rowToPhase);
+}
+
+export function setPhaseState(id: number, state: PhaseState): ProjectPhase {
+  db.prepare("UPDATE project_phases SET state = ?, updated_at = ? WHERE id = ?").run(state, now(), id);
+  const row = db.prepare("SELECT * FROM project_phases WHERE id = ?").get(id) as PhaseRow | undefined;
+  if (!row) throw new Error(`phase ${id} not found after state update`);
+  return rowToPhase(row);
+}
+
+export function getNextPendingPhase(projectId: number): ProjectPhase | null {
+  const row = db
+    .prepare(
+      "SELECT * FROM project_phases WHERE project_id = ? AND state = ? ORDER BY phase_index ASC LIMIT 1",
+    )
+    .get(projectId, PhaseState.PENDING) as PhaseRow | undefined;
+  return row ? rowToPhase(row) : null;
+}
+
+export function isAllPhasesComplete(projectId: number): boolean {
+  const phases = listPhases(projectId);
+  if (phases.length === 0) return true;
+  return phases.every(
+    (p) => p.state === PhaseState.COMPLETED || p.state === PhaseState.SKIPPED,
+  );
+}
+
+export function getRunningPhase(projectId: number): ProjectPhase | null {
+  const row = db
+    .prepare(
+      "SELECT * FROM project_phases WHERE project_id = ? AND state = ? ORDER BY phase_index ASC LIMIT 1",
+    )
+    .get(projectId, PhaseState.RUNNING) as PhaseRow | undefined;
+  return row ? rowToPhase(row) : null;
+}
+
+/**
+ * Delete all tasks for a project (used when transitioning between phases
+ * to replace old tasks with new ones for the next phase).
+ */
+export function deleteProjectTasks(projectId: number): void {
+  db.prepare("DELETE FROM project_tasks WHERE project_id = ?").run(projectId);
 }

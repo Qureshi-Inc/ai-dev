@@ -421,6 +421,69 @@ export function startOmlxMonitor(): void {
 }
 
 /**
+ * Clear oMLX SSD and hot caches to reclaim memory.
+ * Call this between phases or when memory pressure is high.
+ */
+export async function clearOmlxCaches(): Promise<{ ssdCleared: number; hotReclaimed: number }> {
+  const baseUrl = getBaseUrl();
+  const timeout = config.dashboard.omlxRequestTimeoutMs;
+  let ssdCleared = 0;
+  let hotReclaimed = 0;
+
+  // Ensure admin session
+  if (!adminSessionCookie) await ensureAdminSession();
+  const headers = buildAuthHeaders();
+  if (Object.keys(headers).length === 0) {
+    logger.warn("oMLX maintenance: no admin auth available, cannot clear caches");
+    return { ssdCleared, hotReclaimed };
+  }
+
+  try {
+    const ctrl1 = new AbortController();
+    const t1 = setTimeout(() => ctrl1.abort(), timeout);
+    const r1 = await fetch(`${baseUrl}/admin/api/ssd-cache/clear`, {
+      method: "POST", headers, signal: ctrl1.signal,
+    });
+    clearTimeout(t1);
+    if (r1.ok) {
+      const d = await r1.json() as { total_deleted?: number };
+      ssdCleared = d.total_deleted ?? 0;
+    }
+  } catch { /* best-effort */ }
+
+  try {
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), timeout);
+    const r2 = await fetch(`${baseUrl}/admin/api/hot-cache/clear`, {
+      method: "POST", headers, signal: ctrl2.signal,
+    });
+    clearTimeout(t2);
+    if (r2.ok) {
+      const d = await r2.json() as { bytes_reclaimed?: number };
+      hotReclaimed = d.bytes_reclaimed ?? 0;
+    }
+  } catch { /* best-effort */ }
+
+  logger.info({ ssdCleared, hotReclaimed: hotReclaimed / (1024 ** 3) }, "oMLX caches cleared");
+  return { ssdCleared, hotReclaimed };
+}
+
+/**
+ * Check memory pressure and auto-clear caches if above soft limit.
+ * Call this before starting a new task to ensure headroom.
+ */
+export async function ensureOmlxHeadroom(): Promise<void> {
+  if (!latestStats?.memoryPressure) return;
+  const { level } = latestStats.memoryPressure;
+  if (level === "soft" || level === "hard" || level === "critical") {
+    logger.warn({ level }, "oMLX memory pressure detected; clearing caches");
+    await clearOmlxCaches();
+    // Re-poll to get fresh stats
+    await pollOnce();
+  }
+}
+
+/**
  * Stop the oMLX monitor (for graceful shutdown).
  */
 export function stopOmlxMonitor(): void {

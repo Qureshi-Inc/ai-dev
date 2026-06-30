@@ -25,11 +25,14 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
-# Pin Claude Code version for reproducibility.
-# Installed globally so the executor can invoke it as 'claude'.
+# Pin Claude Code and Task Master versions for reproducibility.
 ARG CLAUDE_CODE_VERSION=1.0.29
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
-  && claude --version
+ARG TASK_MASTER_VERSION=0.43.1
+RUN npm install -g \
+    @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+    task-master-ai@${TASK_MASTER_VERSION} \
+  && claude --version \
+  && task-master --version
 
 # Create non-root user for Claude Code subprocess isolation.
 # The main orchestrator runs as root (needs to read mounted secrets),

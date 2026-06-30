@@ -2,12 +2,15 @@ import type { InstallationOctokit } from "../github/app.js";
 import {
   ProjectState,
   ProjectTaskState,
+  PhaseState,
   type Project,
   type ProjectTask,
+  type ProjectPhase,
 } from "../types.js";
 import {
   getProjectById,
   listProjectTasks,
+  listPhases,
   updateProject,
   parseSubtasks,
 } from "../storage/projectState.js";
@@ -65,7 +68,31 @@ function elapsed(createdAt: string): string {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
+function phaseStateEmoji(state: PhaseState): string {
+  switch (state) {
+    case PhaseState.COMPLETED:
+      return "✅";
+    case PhaseState.RUNNING:
+      return "🔄";
+    case PhaseState.FAILED:
+      return "❌";
+    case PhaseState.SKIPPED:
+      return "⏭️";
+    case PhaseState.PENDING:
+      return "○";
+    default:
+      return "○";
+  }
+}
+
 function buildProjectBody(project: Project, tasks: ProjectTask[]): string {
+  const phases = listPhases(project.id);
+  const isPhased = phases.length > 0;
+
+  if (isPhased) {
+    return buildPhasedProjectBody(project, tasks, phases);
+  }
+
   const completed = tasks.filter((t) => t.state === ProjectTaskState.COMPLETED).length;
   const total = tasks.length;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
@@ -94,6 +121,107 @@ function buildProjectBody(project: Project, tasks: ProjectTask[]): string {
     const subtasks = parseSubtasks(task);
     for (const sub of subtasks) {
       lines.push(`   - ${sub}`);
+    }
+  }
+
+  if (project.lastError) {
+    lines.push(
+      "",
+      "<details><summary>Error details</summary>",
+      "",
+      "```",
+      project.lastError,
+      "```",
+      "",
+      "</details>",
+    );
+  }
+
+  lines.push(
+    "",
+    "---",
+    "**Commands:**",
+    "- `/ai-dev approve` — start execution",
+    "- `/ai-dev status` — refresh this comment",
+    "- `/ai-dev pause` — pause execution",
+    "- `/ai-dev resume` — resume execution",
+    "- `/ai-dev retry <task-number>` — retry a failed task",
+    "- `/ai-dev cancel` — cancel the project",
+    "",
+    `<sub>ai-dev project · updated ${new Date().toISOString()}</sub>`,
+  );
+
+  return lines.join("\n");
+}
+
+function buildPhasedProjectBody(project: Project, tasks: ProjectTask[], phases: ProjectPhase[]): string {
+  const completedPhases = phases.filter((p) => p.state === PhaseState.COMPLETED).length;
+  const runningPhase = phases.find((p) => p.state === PhaseState.RUNNING);
+  const currentPhaseIndex = runningPhase ? runningPhase.phaseIndex + 1 : completedPhases;
+
+  // Overall progress: completed phases contribute 100%, running phase contributes partial
+  const tasksDone = tasks.filter((t) => t.state === ProjectTaskState.COMPLETED).length;
+  const tasksTotal = tasks.length;
+  const phaseProgress = tasksTotal > 0 ? tasksDone / tasksTotal : 0;
+  const overallPct = Math.round(((completedPhases + phaseProgress) / phases.length) * 100);
+
+  const statusSuffix = runningPhase
+    ? ` — Phase ${runningPhase.phaseIndex + 1} of ${phases.length}`
+    : "";
+
+  const lines: string[] = [
+    "## 🗂️ ai-dev project",
+    "",
+    `**Status:** ${projectStateLabel(project.state)}${statusSuffix}`,
+    `**Overall Progress:** ${overallPct}%`,
+    `**Elapsed:** ${elapsed(project.createdAt)}`,
+    "",
+    "### Phases",
+    "",
+  ];
+
+  for (const phase of phases) {
+    const emoji = phaseStateEmoji(phase.state);
+    let suffix = "";
+    if (phase.state === PhaseState.RUNNING && tasksTotal > 0) {
+      suffix = ` → ${tasksDone}/${tasksTotal} tasks`;
+    } else if (phase.state === PhaseState.COMPLETED) {
+      suffix = " → done";
+    }
+    lines.push(`${emoji} Phase ${phase.phaseIndex + 1}: ${phase.title}${suffix}`);
+  }
+
+  // Show current phase tasks if running
+  if (runningPhase && tasks.length > 0) {
+    lines.push(
+      "",
+      `### Current Phase: ${runningPhase.title}`,
+      "",
+    );
+    for (const task of tasks) {
+      const deps = task.dependencies ? JSON.parse(task.dependencies) as number[] : [];
+      const depStr = deps.length > 0 ? ` _(depends on: ${deps.map((d) => `#${d + 1}`).join(", ")})_` : "";
+      const errorStr = task.state === ProjectTaskState.FAILED && task.lastError
+        ? ` — \`${task.lastError.slice(0, 80)}\``
+        : "";
+      lines.push(
+        `${stateEmoji(task.state as ProjectTaskState)} **${task.taskIndex + 1}.** ${task.title}${depStr}${errorStr}`,
+      );
+    }
+  }
+
+  // Show phase descriptions in awaiting approval state
+  if (project.state === ProjectState.AWAITING_APPROVAL) {
+    lines.push("");
+    for (const phase of phases) {
+      lines.push(
+        "",
+        `<details><summary>Phase ${phase.phaseIndex + 1}: ${phase.title}</summary>`,
+        "",
+        phase.description,
+        "",
+        "</details>",
+      );
     }
   }
 

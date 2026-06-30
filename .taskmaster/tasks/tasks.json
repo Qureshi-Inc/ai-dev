@@ -1,0 +1,47 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Create Dark Mode Toggle Button Component",
+        "description": "Build a reusable DarkModeToggle component that renders a button with sun/moon icons to indicate light/dark modes",
+        "details": "Create a new component file at `/home/opti3/services/ai-dev/apps/dashboard/components/DarkModeToggle.tsx`. This client component should:\n\n1. Import React hooks (useState, useEffect) for managing state\n2. Use sun and moon SVG icons to visually represent the current theme\n3. Include a button that toggles between themes on click\n4. Apply smooth transitions when toggling between icons\n5. Use Tailwind classes for styling that work with both light and dark modes\n\nPseudo-code:\n```tsx\n'use client';\nimport { useState, useEffect } from 'react';\n\nexport function DarkModeToggle() {\n  const [isDark, setIsDark] = useState(true);\n  \n  // Effect to read initial theme from HTML element\n  useEffect(() => {\n    const htmlElement = document.documentElement;\n    setIsDark(htmlElement.classList.contains('dark'));\n  }, []);\n  \n  const toggleTheme = () => {\n    const newTheme = !isDark;\n    setIsDark(newTheme);\n    // Theme toggle logic will be handled by the hook (task 2)\n  };\n  \n  return (\n    <button\n      onClick={toggleTheme}\n      className=\"p-2 rounded-lg hover:bg-zinc-800 transition-colors\"\n      aria-label=\"Toggle dark mode\"\n    >\n      {isDark ? <SunIcon /> : <MoonIcon />}\n    </button>\n  );\n}\n```",
+        "testStrategy": "1. Verify the component renders without errors\n2. Test that clicking the button toggles between sun and moon icons\n3. Ensure the button has proper accessibility attributes (aria-label)\n4. Verify hover states and transitions work correctly\n5. Test that the component correctly reads the initial theme state from the HTML element",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "Implement Theme Persistence Logic with Custom Hook",
+        "description": "Create a custom React hook that manages theme state, localStorage persistence, and HTML class manipulation",
+        "details": "Create a new hook file at `/home/opti3/services/ai-dev/apps/dashboard/hooks/useTheme.ts`. This hook should:\n\n1. Initialize theme from localStorage on mount, falling back to 'dark' as default\n2. Provide a toggle function that switches between light and dark modes\n3. Update the HTML element's class list when theme changes\n4. Persist theme preference to localStorage\n5. Handle SSR compatibility by checking for window object\n\nPseudo-code:\n```tsx\nimport { useState, useEffect } from 'react';\n\nconst STORAGE_KEY = 'theme-preference';\n\nexport function useTheme() {\n  const [theme, setTheme] = useState<'light' | 'dark'>('dark');\n  \n  // Initialize theme from localStorage\n  useEffect(() => {\n    if (typeof window === 'undefined') return;\n    \n    const stored = localStorage.getItem(STORAGE_KEY);\n    const initial = stored === 'light' ? 'light' : 'dark';\n    setTheme(initial);\n    \n    // Apply initial theme\n    const html = document.documentElement;\n    html.classList.toggle('dark', initial === 'dark');\n  }, []);\n  \n  // Update HTML class and localStorage when theme changes\n  useEffect(() => {\n    if (typeof window === 'undefined') return;\n    \n    const html = document.documentElement;\n    html.classList.toggle('dark', theme === 'dark');\n    localStorage.setItem(STORAGE_KEY, theme);\n  }, [theme]);\n  \n  const toggleTheme = () => {\n    setTheme(prev => prev === 'dark' ? 'light' : 'dark');\n  };\n  \n  return { theme, toggleTheme };\n}\n```\n\nThen update the DarkModeToggle component to use this hook for state management.",
+        "testStrategy": "1. Test localStorage persistence by toggling theme and refreshing the page\n2. Verify the HTML element's 'dark' class is correctly added/removed\n3. Test SSR compatibility by ensuring no errors during server-side rendering\n4. Verify fallback to dark theme when localStorage is empty\n5. Test that theme changes are immediately reflected in the UI",
+        "priority": "high",
+        "dependencies": [],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Integrate Dark Mode Toggle into App Header",
+        "description": "Add the DarkModeToggle component to the application header in the providers file and update styles for light mode support",
+        "details": "Update `/home/opti3/services/ai-dev/apps/dashboard/app/providers.tsx` to include the DarkModeToggle component in the header:\n\n1. Import the DarkModeToggle component\n2. Add it to the header next to the Live indicator\n3. Update the root layout to remove the hardcoded 'dark' class\n4. Add a theme initialization script to prevent flash of unstyled content (FOUC)\n\nChanges to providers.tsx:\n```tsx\nimport { DarkModeToggle } from '@/components/DarkModeToggle';\n\n// In the AppShell component's header:\n<header className=\"sticky top-0 z-20 flex h-14 items-center justify-between border-b border-zinc-800 bg-zinc-950/95 dark:bg-zinc-950/95 bg-white/95 px-4 backdrop-blur-sm md:px-6\">\n  <h1 className=\"text-sm font-semibold text-zinc-900 dark:text-zinc-100 md:hidden\">ai-dev</h1>\n  <div className=\"hidden md:block\" />\n  <div className=\"flex items-center gap-3\">\n    <DarkModeToggle />\n    <div className=\"flex items-center gap-2 text-xs text-zinc-500\">\n      <span className=\"relative flex h-2 w-2\">\n        <span className=\"relative inline-flex h-2 w-2 rounded-full bg-green-400\" />\n      </span>\n      <span>Live</span>\n    </div>\n  </div>\n</header>\n```\n\nUpdate layout.tsx to handle theme initialization:\n```tsx\n// Remove hardcoded 'dark' class from <html>\n<html lang=\"en\">\n  <head>\n    <script dangerouslySetInnerHTML={{\n      __html: `\n        (function() {\n          const theme = localStorage.getItem('theme-preference');\n          if (theme === 'light') {\n            document.documentElement.classList.remove('dark');\n          } else {\n            document.documentElement.classList.add('dark');\n          }\n        })()\n      `\n    }} />\n  </head>\n```\n\nUpdate key components to support light mode colors using Tailwind's dark: variant where needed.",
+        "testStrategy": "1. Verify the toggle button appears in the header on both desktop and mobile views\n2. Test that toggling dark mode updates all UI elements correctly\n3. Ensure no flash of unstyled content on page refresh\n4. Test that the theme preference persists across page navigation\n5. Verify light mode colors are properly applied throughout the app\n6. Test responsiveness of the header with the new toggle button",
+        "priority": "medium",
+        "dependencies": [
+          1,
+          2
+        ],
+        "status": "pending",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2026-06-29T10:09:47.495Z",
+      "updated": "2026-06-29T10:09:47.495Z",
+      "description": "Tasks for master context"
+    }
+  }
+}

@@ -23,6 +23,8 @@ services:
       - CLAUDE_CODE_USE_BEDROCK=${CLAUDE_CODE_USE_BEDROCK:-}
       # Claude Code execution engine.
       - CLAUDE_CODE_WORKTREE_DIR=/app/data/worktrees
+      # Task Master CLI (installed globally in the container)
+      - TASK_MASTER_CMD=task-master
     volumes:
       - ./data:/app/data
       # Mounted at the same absolute path used by GITHUB_PRIVATE_KEY_PATH so host
@@ -32,6 +34,8 @@ services:
       - ~/.aws:/root/.aws:ro
       # Claude Code settings (model config for Bedrock, without skipDangerousMode for root).
       - ./secrets/claude-settings.json:/root/.claude/settings.json:ro
+      # Task Master config — mounted where the planner runs (workdir)
+      - ./.taskmaster:/app/data/repos/.taskmaster
     expose:
       - "8088"
     # Bind to localhost on the host for local curl/debugging of /status and /healthz.

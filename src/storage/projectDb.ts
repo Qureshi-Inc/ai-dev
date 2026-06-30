@@ -36,10 +36,24 @@ db.exec(`
     FOREIGN KEY (job_id) REFERENCES issue_jobs(id) ON DELETE SET NULL
   );
 
+  CREATE TABLE IF NOT EXISTS project_phases (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    phase_index   INTEGER NOT NULL,
+    title         TEXT    NOT NULL,
+    description   TEXT    NOT NULL DEFAULT '',
+    state         TEXT    NOT NULL,
+    created_at    TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL,
+    UNIQUE(project_id, phase_index),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_projects_state ON projects(state);
   CREATE INDEX IF NOT EXISTS idx_projects_issue ON projects(owner, repo, issue_number);
   CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(project_id);
   CREATE INDEX IF NOT EXISTS idx_project_tasks_state ON project_tasks(state);
+  CREATE INDEX IF NOT EXISTS idx_project_phases_project ON project_phases(project_id);
 `);
 
 // Lightweight migration: add columns introduced after initial release.
