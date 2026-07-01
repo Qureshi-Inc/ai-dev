@@ -302,7 +302,8 @@ function renderJobsHtml(jobs: DashboardJob[]): string {
 
 export function renderDashboard(_req: Request, res: Response): void {
   const codingModel = escapeHtml(config.llm.modelPro);
-  const planningModel = "Claude Opus (Bedrock)";
+  const fastModel = escapeHtml(config.llm.modelFast);
+  const planningModel = "Claude Opus 4.6 (Bedrock)";
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -480,6 +481,7 @@ a:hover{text-decoration:underline}
   var lastRefreshTime = Date.now();
   var connected = true;
   var codingModel = "${codingModel}";
+  var fastModel = "${fastModel}";
   var planningModel = "${planningModel}";
 
   function escapeHtml(s) {
@@ -671,6 +673,7 @@ a:hover{text-decoration:underline}
     // Models
     html += '<div style="background:#18181b;border:1px solid #27272a;border-radius:10px;padding:14px 16px;margin-bottom:20px">';
     html += '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="font-size:.8125rem;color:#71717a">Planning</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(planningModel) + '</span></div>';
+    html += '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span style="font-size:.8125rem;color:#71717a">Scaffolding</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(fastModel) + ' (oMLX)</span></div>';
     html += '<div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#71717a">Coding</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(codingModel) + ' (oMLX)</span></div>';
     html += '</div>';
     // Status explanation + actions (prominent when paused/failed)
@@ -817,6 +820,47 @@ a:hover{text-decoration:underline}
     if (t.lastError) {
       html += '<div class="error-box"><div class="error-box-title">Error</div><div class="error-box-text mono">' + escapeHtml(t.lastError) + '</div></div>';
     }
+    // Workflow execution details (fetched async)
+    html += '<section class="section" style="margin-top:20px"><h2 class="section-title">Workflow Execution</h2>';
+    html += '<div id="workflow-detail-' + t.id + '" style="background:#18181b;border:1px solid #27272a;border-radius:10px;padding:14px 16px;color:#71717a;font-size:.8125rem">Loading workflow data...</div>';
+    html += '</section>';
+    // Inject async fetch for workflow data
+    html += '<script>(function(){var tid=' + t.id + ';';
+    html += 'fetch("/api/dashboard/task-runs/"+tid).then(function(r){return r.json()}).then(function(runs){';
+    html += 'var el=document.getElementById("workflow-detail-"+tid);if(!el)return;';
+    html += 'if(!runs||runs.length===0){el.innerHTML="<span style=\\"color:#71717a\\">No workflow runs recorded</span>";return;}';
+    html += 'var h="";';
+    // Current step display for the latest run
+    html += 'var latest=runs[0];';
+    html += 'h+="<div style=\\"display:flex;justify-content:space-between;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #27272a\\"><div><span style=\\"color:#71717a\\">Current Step</span></div><div style=\\"display:flex;gap:8px;align-items:center\\"><span class=\\"mono\\" style=\\"color:#93c5fd\\">"+(latest.currentStep||"none")+"</span><span class=\\"badge badge-"+latest.status.toLowerCase().replace(/_/g,"-")+"\\">"+(latest.status)+"</span></div></div>";';
+    html += 'h+="<div style=\\"display:flex;justify-content:space-between;margin-bottom:10px\\"><span style=\\"color:#71717a\\">Attempt</span><span style=\\"color:#d4d4d8\\">"+latest.attemptNumber+"</span></div>";';
+    html += 'if(latest.branchName)h+="<div style=\\"display:flex;justify-content:space-between;margin-bottom:10px\\"><span style=\\"color:#71717a\\">Branch</span><span class=\\"mono\\" style=\\"color:#d4d4d8\\">"+latest.branchName+"</span></div>";';
+    html += 'if(latest.resultingCommitSha)h+="<div style=\\"display:flex;justify-content:space-between;margin-bottom:10px\\"><span style=\\"color:#71717a\\">Commit</span><span class=\\"mono\\" style=\\"color:#d4d4d8\\">"+latest.resultingCommitSha.slice(0,8)+"</span></div>";';
+    html += 'if(latest.failureType)h+="<div style=\\"display:flex;justify-content:space-between;margin-bottom:10px\\"><span style=\\"color:#71717a\\">Failure Type</span><span style=\\"color:#fca5a5\\">"+latest.failureType+"</span></div>";';
+    // Attempt history
+    html += 'if(latest.attempts&&latest.attempts.length>0){';
+    html += 'h+="<div style=\\"border-top:1px solid #27272a;padding-top:12px;margin-top:12px\\"><div style=\\"font-size:.75rem;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px\\">Attempt History</div>";';
+    html += 'for(var i=0;i<latest.attempts.length;i++){var a=latest.attempts[i];';
+    html += 'var aBadge=a.status==="succeeded"?"background:#064e3b;color:#6ee7b7":a.status==="failed"?"background:#7f1d1d;color:#fca5a5":"background:#1e3a5f;color:#93c5fd";';
+    html += 'var dur="";if(a.startedAt&&a.completedAt){var ms=new Date(a.completedAt).getTime()-new Date(a.startedAt).getTime();dur=ms<60000?Math.floor(ms/1000)+"s":Math.floor(ms/60000)+"m";}';
+    html += 'h+="<div style=\\"display:flex;align-items:center;gap:10px;padding:8px 10px;background:#0f0f12;border-radius:6px;margin-bottom:4px\\"><span style=\\"font-size:.75rem;color:#71717a;width:24px\\">#"+a.attemptNumber+"</span><span style=\\"display:inline-block;padding:2px 6px;border-radius:4px;font-size:.625rem;font-weight:700;"+aBadge+"\\">"+a.status.toUpperCase()+"</span>"+(a.modelName?"<span class=\\"mono\\" style=\\"font-size:.6875rem;color:#a1a1aa\\">"+a.modelName+"</span>":"")+(dur?"<span style=\\"font-size:.6875rem;color:#71717a;margin-left:auto\\">"+dur+"</span>":"")+"</div>";';
+    html += 'if(a.failureMessage&&a.status==="failed")h+="<div style=\\"font-size:.6875rem;color:#f87171;padding:2px 10px 6px 44px\\">"+a.failureMessage.slice(0,200)+"</div>";';
+    html += '}h+="</div>";}';
+    html += 'el.innerHTML=h;';
+    html += '}).catch(function(){var el=document.getElementById("workflow-detail-"+tid);if(el)el.innerHTML="<span style=\\"color:#71717a\\">Failed to load workflow data</span>";});';
+    // Also fetch events
+    html += 'fetch("/api/dashboard/task-runs/"+tid+"/events").then(function(r){return r.json()}).then(function(events){';
+    html += 'if(!events||events.length===0)return;';
+    html += 'var el=document.getElementById("workflow-detail-"+tid);if(!el)return;';
+    html += 'var h=el.innerHTML;';
+    html += 'h+="<div style=\\"border-top:1px solid #27272a;padding-top:12px;margin-top:12px\\"><div style=\\"font-size:.75rem;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px\\">Event Timeline (last 20)</div>";';
+    html += 'var shown=events.slice(-20);';
+    html += 'for(var i=0;i<shown.length;i++){var ev=shown[i];';
+    html += 'var evColor=ev.eventType==="failure"?"#f87171":ev.eventType==="completed"?"#4ade80":"#a1a1aa";';
+    html += 'h+="<div style=\\"display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:.75rem\\"><span style=\\"color:"+evColor+";flex-shrink:0\\">"+ev.eventType+"</span><span style=\\"color:#d4d4d8;flex:1\\">"+ev.message.slice(0,200)+"</span></div>";}';
+    html += 'h+="</div>";el.innerHTML=h;';
+    html += '}).catch(function(){});';
+    html += '})();<\/script>';
     // Retry button
     if (t.state === "FAILED") {
       html += '<div class="actions-row"><button class="action-btn action-btn-retry" data-task-action="retry" data-tid="' + t.id + '">Retry Task</button></div>';
@@ -868,8 +912,9 @@ a:hover{text-decoration:underline}
     html += '</div></section>';
     // Models
     html += '<section class="section"><h2 class="section-title">Models</h2><div style="background:#18181b;border:1px solid #27272a;border-radius:10px;padding:14px 16px">';
-    html += '<div style="display:flex;justify-content:space-between;margin-bottom:8px"><span style="font-size:.8125rem;color:#71717a">Coding model</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(codingModel) + '</span></div>';
-    html += '<div style="display:flex;justify-content:space-between;margin-bottom:8px"><span style="font-size:.8125rem;color:#71717a">Planning model</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(planningModel) + '</span></div>';
+    html += '<div style="display:flex;justify-content:space-between;margin-bottom:8px"><span style="font-size:.8125rem;color:#71717a">Planning</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(planningModel) + '</span></div>';
+    html += '<div style="display:flex;justify-content:space-between;margin-bottom:8px"><span style="font-size:.8125rem;color:#71717a">Scaffolding (fast)</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(fastModel) + '</span></div>';
+    html += '<div style="display:flex;justify-content:space-between;margin-bottom:8px"><span style="font-size:.8125rem;color:#71717a">Coding (precise)</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(codingModel) + '</span></div>';
     if (o && o.stats && o.stats.activeModel) html += '<div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#71717a">Active (loaded)</span><span class="mono" style="color:#d4d4d8">' + escapeHtml(o.stats.activeModel) + '</span></div>';
     html += '</div></section>';
     // oMLX details

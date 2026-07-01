@@ -8,6 +8,7 @@ import {
   setProjectState,
   updateProjectTask,
 } from "./storage/projectState.js";
+import * as taskRunState from "./storage/taskRunState.js";
 import { listActiveJobs } from "./storage/state.js";
 import { getLatestOmlxStats } from "./omlx/monitor.js";
 import { broadcastEvent, getBufferedEvents, getClientCount } from "./sse.js";
@@ -425,6 +426,123 @@ function handleRetryTask(req: Request, res: Response): void {
 }
 
 // ---------------------------------------------------------------------------
+// Task Run endpoints (workflow / durable execution)
+// ---------------------------------------------------------------------------
+
+function handleTaskRuns(req: Request, res: Response): void {
+  const taskId = parseInt(paramAsString(req.params.taskId), 10);
+  if (isNaN(taskId)) {
+    res.status(400).json({ error: "Invalid task ID" });
+    return;
+  }
+
+  // Get all runs for this task
+  const rows = db
+    .prepare("SELECT * FROM task_runs WHERE task_id = ? ORDER BY created_at DESC")
+    .all(taskId) as Array<{
+      id: number;
+      project_id: number;
+      phase_id: number | null;
+      task_id: number;
+      workflow_id: string;
+      status: string;
+      current_step: string | null;
+      starting_commit_sha: string | null;
+      resulting_commit_sha: string | null;
+      branch_name: string | null;
+      worktree_path: string | null;
+      worker_id: string | null;
+      attempt_number: number;
+      failure_type: string | null;
+      failure_message: string | null;
+      retryable: number | null;
+      created_at: string;
+      started_at: string | null;
+      completed_at: string | null;
+      updated_at: string;
+    }>;
+
+  const runs = rows.map((r) => {
+    // Get attempts for each run
+    const attempts = db
+      .prepare("SELECT * FROM task_attempts WHERE task_run_id = ? ORDER BY attempt_number ASC")
+      .all(r.id) as Array<{
+        id: number;
+        task_run_id: number;
+        attempt_number: number;
+        status: string;
+        failure_type: string | null;
+        failure_message: string | null;
+        retryable: number | null;
+        model_provider: string | null;
+        model_name: string | null;
+        started_at: string;
+        completed_at: string | null;
+        heartbeat_at: string | null;
+      }>;
+
+    return {
+      id: r.id,
+      projectId: r.project_id,
+      phaseId: r.phase_id,
+      taskId: r.task_id,
+      workflowId: r.workflow_id,
+      status: r.status,
+      currentStep: r.current_step,
+      startingCommitSha: r.starting_commit_sha,
+      resultingCommitSha: r.resulting_commit_sha,
+      branchName: r.branch_name,
+      worktreePath: r.worktree_path,
+      workerId: r.worker_id,
+      attemptNumber: r.attempt_number,
+      failureType: r.failure_type,
+      failureMessage: r.failure_message,
+      retryable: r.retryable === null ? null : r.retryable === 1,
+      createdAt: r.created_at,
+      startedAt: r.started_at,
+      completedAt: r.completed_at,
+      updatedAt: r.updated_at,
+      attempts: attempts.map((a) => ({
+        id: a.id,
+        attemptNumber: a.attempt_number,
+        status: a.status,
+        failureType: a.failure_type,
+        failureMessage: a.failure_message,
+        retryable: a.retryable === null ? null : a.retryable === 1,
+        modelProvider: a.model_provider,
+        modelName: a.model_name,
+        startedAt: a.started_at,
+        completedAt: a.completed_at,
+        heartbeatAt: a.heartbeat_at,
+      })),
+    };
+  });
+
+  res.json(runs);
+}
+
+function handleTaskRunEvents(req: Request, res: Response): void {
+  const taskId = parseInt(paramAsString(req.params.taskId), 10);
+  if (isNaN(taskId)) {
+    res.status(400).json({ error: "Invalid task ID" });
+    return;
+  }
+
+  // Get the most recent run for this task to show events
+  const latestRun = db
+    .prepare("SELECT id FROM task_runs WHERE task_id = ? ORDER BY created_at DESC LIMIT 1")
+    .get(taskId) as { id: number } | undefined;
+
+  if (!latestRun) {
+    res.json([]);
+    return;
+  }
+
+  const events = taskRunState.getTaskRunEvents(latestRun.id);
+  res.json(events);
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -442,6 +560,10 @@ export function createDashboardApiRouter(): Router {
   router.get("/events", handleEvents);
   router.get("/health", handleHealth);
   router.get("/omlx", handleOmlxStats);
+
+  // Task run endpoints (workflow / durable execution)
+  router.get("/task-runs/:taskId", handleTaskRuns);
+  router.get("/task-runs/:taskId/events", handleTaskRunEvents);
 
   // Command endpoints
   router.post("/projects/:id/approve", handleApproveProject);

@@ -39,6 +39,8 @@ const RawSchema = z.object({
   // "Pro" model: used for everything on ai-dev-pro issues, and for coding fixes
   // after escalation (a failed CI attempt). Currently the same single oMLX model.
   MODEL_PRO: z.string().default("Qwen3.6-35B-A3B-MLX-8bit"),
+  // Fast model: used for scaffolding/first tasks in a phase (smaller, faster).
+  MODEL_FAST: z.string().default("Qwen3-Coder-Next-MLX-4bit"),
   // Coding tasks escalate to MODEL_PRO once attempt >= this value (0 = initial try).
   ESCALATE_AFTER_RETRIES: z.coerce.number().int().nonnegative().default(1),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(600000),
@@ -123,6 +125,14 @@ const RawSchema = z.object({
   OMLX_ADMIN_AUTH_HEADER: z.string().default(""),
   OMLX_ADMIN_AUTH_COOKIE: z.string().default(""),
 
+  // Workflow / durable execution engine.
+  WORKFLOW_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  WORKFLOW_MAX_REPAIR_ATTEMPTS: z.coerce.number().int().nonnegative().default(2),
+  WORKFLOW_HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
+  WORKFLOW_CONTEXT_MAX_TOKENS: z.coerce.number().int().positive().default(10000),
+  WORKFLOW_CONTEXT_MAX_FILES: z.coerce.number().int().positive().default(15),
+  WORKFLOW_WORKER_ID: z.string().default("worker-1"),
+
   // Claude Code execution engine for Project Mode tasks.
   CLAUDE_CODE_BIN: z.string().default("claude"),
   // Per-task timeout in ms (default 15 min).
@@ -166,6 +176,7 @@ export const config = {
     modelCode: raw.MODEL_CODE,
     modelDebug: raw.MODEL_DEBUG,
     modelPro: raw.MODEL_PRO,
+    modelFast: raw.MODEL_FAST,
     escalateAfterRetries: raw.ESCALATE_AFTER_RETRIES,
     timeoutMs: raw.LLM_TIMEOUT_MS,
     maxOutputTokens: raw.LLM_MAX_OUTPUT_TOKENS,
@@ -230,6 +241,15 @@ export const config = {
     omlxAdminStatsEnabled: boolFromEnv(raw.OMLX_ADMIN_STATS_ENABLED, false),
     omlxAdminAuthHeader: raw.OMLX_ADMIN_AUTH_HEADER.trim(),
     omlxAdminAuthCookie: raw.OMLX_ADMIN_AUTH_COOKIE.trim(),
+  },
+
+  workflow: {
+    maxAttempts: raw.WORKFLOW_MAX_ATTEMPTS,
+    maxRepairAttempts: raw.WORKFLOW_MAX_REPAIR_ATTEMPTS,
+    heartbeatTimeoutMs: raw.WORKFLOW_HEARTBEAT_TIMEOUT_MS,
+    contextMaxTokens: raw.WORKFLOW_CONTEXT_MAX_TOKENS,
+    contextMaxFiles: raw.WORKFLOW_CONTEXT_MAX_FILES,
+    workerId: raw.WORKFLOW_WORKER_ID.trim(),
   },
 
   claudeCode: {

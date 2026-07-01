@@ -41,6 +41,12 @@ import {
   runFinalValidation,
   cleanupFailedWorktree,
 } from "./claudeCodeExecutor.js";
+import { WorkflowEngine } from "../workflow/engine.js";
+import { WorktreeManager } from "../workflow/worktreeManager.js";
+import { ContextBuilder } from "../workflow/contextBuilder.js";
+import { CodingAgentClient } from "../workflow/codingAgent.js";
+import { VerificationRunner } from "../workflow/verifier.js";
+import * as taskRunState from "../storage/taskRunState.js";
 import { queue } from "../queue/queue.js";
 import { logger } from "../utils/logger.js";
 import { broadcastEvent } from "../sse.js";
@@ -60,6 +66,34 @@ export function getTaskExecutor(): TaskExecutor {
     _executor = new ClaudeCodeTaskExecutor();
   }
   return _executor;
+}
+
+// ---------------------------------------------------------------------------
+// Workflow Engine (lazily initialized)
+// ---------------------------------------------------------------------------
+
+let _workflowEngine: WorkflowEngine | null = null;
+
+export function getWorkflowEngine(): WorkflowEngine {
+  if (!_workflowEngine) {
+    const repoDir = config.agent.workdir;
+    const worktreeDir = config.claudeCode.worktreeDir;
+    const worktreeManager = new WorktreeManager(repoDir, worktreeDir);
+    const contextBuilder = new ContextBuilder({
+      maxInputTokens: config.workflow.contextMaxTokens,
+      maxFiles: config.workflow.contextMaxFiles,
+    });
+    const codingAgent = new CodingAgentClient(1);
+    const verifier = new VerificationRunner();
+    _workflowEngine = new WorkflowEngine(
+      taskRunState,
+      worktreeManager,
+      contextBuilder,
+      codingAgent,
+      verifier,
+    );
+  }
+  return _workflowEngine;
 }
 
 /**
@@ -560,7 +594,24 @@ async function advancePhase(projectId: number): Promise<void> {
     await clearOmlxCaches();
   } catch { /* non-fatal */ }
 
-  // Clear previous phase's tasks
+  // Save a summary of completed tasks before deleting (for dashboard history).
+  const prevTasks = listProjectTasks(projectId);
+  if (prevTasks.length > 0) {
+    const allPhases = listPhases(projectId);
+    const prevPhase = allPhases.find((p: { state: string; id: number }) => (p.state === PhaseState.COMPLETED || p.state === PhaseState.FAILED) && p.id !== nextPhase.id);
+    if (prevPhase && prevPhase.id !== nextPhase.id) {
+      const completed = prevTasks.filter(t => t.state === "COMPLETED");
+      const failed = prevTasks.filter(t => t.state === "FAILED");
+      const summary = `Completed: ${completed.length}/${prevTasks.length} tasks. ` +
+        (completed.length > 0 ? `PRs: ${completed.map(t => "#" + t.prNumber).filter(Boolean).join(", ")}. ` : "") +
+        (failed.length > 0 ? `Failed: ${failed.map(t => t.title).join(", ")}` : "");
+      // Append summary to phase description
+      const { db } = await import("../storage/db.js");
+      db.prepare("UPDATE project_phases SET description = description || ? WHERE id = ?")
+        .run(`\n\n--- Results ---\n${summary}`, prevPhase.id);
+    }
+  }
+  // Delete tasks (UNIQUE constraint on task_index requires it for new phase tasks).
   deleteProjectTasks(projectId);
 
   // Re-fetch repo context between phases
@@ -641,9 +692,13 @@ async function advanceProject(projectId: number): Promise<void> {
       // Current phase's tasks are done — mark phase as complete and advance
       const runningPhase = getRunningPhase(projectId);
       if (runningPhase) {
-        const success = isProjectSuccessful(projectId);
-        setPhaseState(runningPhase.id, success ? PhaseState.COMPLETED : PhaseState.FAILED);
-        logger.info({ projectId, phaseIndex: runningPhase.phaseIndex, success }, "phase completed");
+        // Phase is successful if majority of tasks completed (not all need to pass)
+        const phaseTasks = listProjectTasks(projectId);
+        const completed = phaseTasks.filter(t => t.state === "COMPLETED").length;
+        const total = phaseTasks.length;
+        const phaseSuccess = total > 0 && (completed / total) >= 0.5;
+        setPhaseState(runningPhase.id, phaseSuccess ? PhaseState.COMPLETED : PhaseState.FAILED);
+        logger.info({ projectId, phaseIndex: runningPhase.phaseIndex, phaseSuccess }, "phase completed");
       }
       await advancePhase(projectId);
     } else {
@@ -663,13 +718,30 @@ async function advanceProject(projectId: number): Promise<void> {
     }
 
     const blockedTasks = allTasks.filter(t => t.state === ProjectTaskState.BLOCKED);
+    const failedTasks = allTasks.filter(t => t.state === ProjectTaskState.FAILED);
+
+    // AUTO-RETRY: If there are failed tasks that haven't exhausted retries, retry them
+    // before skipping anything. This gives tasks a second chance.
+    if (failedTasks.length > 0) {
+      const maxRetries = config.claudeCode.maxRetries;
+      for (const ft of failedTasks) {
+        if (ft.retryCount < maxRetries) {
+          logger.info({ projectId, taskId: ft.id, retryCount: ft.retryCount }, "auto-retrying failed task");
+          setTaskState(ft.id, ProjectTaskState.READY);
+          updateProjectTask(ft.id, { lastError: null });
+          // Found a retriable task — advance will pick it up
+          await advanceProject(projectId);
+          return;
+        }
+      }
+    }
+
     const failedIndices = new Set(
-      allTasks.filter(t => t.state === ProjectTaskState.FAILED).map(t => t.taskIndex),
+      failedTasks.map(t => t.taskIndex),
     );
 
     if (blockedTasks.length > 0) {
-      // Only skip tasks that DIRECTLY depend on a failed task.
-      // Tasks blocked by other blocked tasks may become unblocked later.
+      // Only skip tasks that DIRECTLY depend on a permanently failed task (exhausted retries).
       let skippedAny = false;
       for (const bt of blockedTasks) {
         const deps = bt.dependencies ? JSON.parse(bt.dependencies) as number[] : [];
@@ -686,13 +758,12 @@ async function advanceProject(projectId: number): Promise<void> {
       if (skippedAny) {
         const newReady = getNextReadyTasks(projectId);
         if (newReady.length > 0) {
-          // More tasks became available — continue execution
           await advanceProject(projectId);
           return;
         }
       }
 
-      // Still deadlocked after targeted skips — skip all remaining blocked
+      // Still deadlocked — skip remaining
       const stillBlocked = listProjectTasks(projectId).filter(t => t.state === ProjectTaskState.BLOCKED);
       for (const bt of stillBlocked) {
         setTaskState(bt.id, ProjectTaskState.SKIPPED);
@@ -752,26 +823,54 @@ async function advanceProject(projectId: number): Promise<void> {
     const freshProject = getProjectById(projectId);
     if (!freshProject || freshProject.state !== ProjectState.RUNNING) return;
 
+    let client: RepoClient | null = null;
     try {
-      await executor.executeTask(freshProject, task);
-      setTaskState(task.id, ProjectTaskState.COMPLETED);
-      broadcastEvent("task_update", { projectId, taskId: task.id, state: ProjectTaskState.COMPLETED, action: "completed" });
-      logger.info({ projectId, taskId: task.id }, "task completed successfully");
+      client = await octokitForRepo(freshProject.owner, freshProject.repo);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       updateProjectTask(task.id, {
         state: ProjectTaskState.FAILED,
-        lastError: message.slice(0, 1000),
+        lastError: `Failed to get repo client: ${message}`.slice(0, 1000),
       });
       broadcastEvent("task_update", { projectId, taskId: task.id, state: ProjectTaskState.FAILED, action: "failed", error: message.slice(0, 200) });
-      logger.error({ projectId, taskId: task.id, err: message }, "task execution failed");
-      await cleanupFailedWorktree(task).catch(() => {});
+      await advanceProject(projectId);
+      return;
+    }
+
+    const base = "main"; // default base branch
+    const engine = getWorkflowEngine();
+    const result = await engine.executeTask({
+      project: freshProject,
+      task,
+      phase: getRunningPhase(projectId) ?? undefined,
+      token: client.token,
+      owner: freshProject.owner,
+      repo: freshProject.repo,
+      baseBranch: base,
+    });
+
+    if (result.success) {
+      setTaskState(task.id, ProjectTaskState.COMPLETED);
+      if (result.prNumber) updateProjectTask(task.id, { prNumber: result.prNumber });
+      if (result.commitSha) updateProjectTask(task.id, { headSha: result.commitSha });
+      broadcastEvent("task_update", { projectId, taskId: task.id, state: ProjectTaskState.COMPLETED, action: "completed" });
+      logger.info({ projectId, taskId: task.id }, "task completed successfully");
+    } else {
+      // Failure already classified and stored by the engine
+      const run = taskRunState.getActiveRunForTask(task.id);
+      const failureMsg = run?.failureMessage?.slice(0, 1000) ?? "execution failed";
+      updateProjectTask(task.id, {
+        state: ProjectTaskState.FAILED,
+        lastError: failureMsg,
+      });
+      broadcastEvent("task_update", { projectId, taskId: task.id, state: ProjectTaskState.FAILED, action: "failed", error: failureMsg.slice(0, 200) });
+      logger.error({ projectId, taskId: task.id, err: failureMsg }, "task execution failed");
     }
 
     // Update progress
     try {
-      const client = await octokitForRepo(project.owner, project.repo);
-      await reportProjectProgress(client.octokit, projectId);
+      const progressClient = await octokitForRepo(freshProject.owner, freshProject.repo);
+      await reportProjectProgress(progressClient.octokit, projectId);
     } catch {
       /* best-effort */
     }

@@ -3,12 +3,13 @@ import { config, assertGithubConfigured } from "./config.js";
 import { logger } from "./utils/logger.js";
 import "./storage/db.js"; // initialise schema on boot
 import "./storage/projectDb.js"; // initialise project mode tables
+import "./storage/taskRunDb.js"; // initialize task run tables
 import { listActiveJobs } from "./storage/state.js";
 import { listActiveProjects } from "./storage/projectState.js";
 import { getGithubApp } from "./github/app.js";
 import { registerWebhooks } from "./github/webhooks.js";
 import { resumeActiveJobs } from "./agent/orchestrator.js";
-import { resumeActiveProjects } from "./agent/projectOrchestrator.js";
+import { resumeActiveProjects, getWorkflowEngine } from "./agent/projectOrchestrator.js";
 import { startCiPoller } from "./ci/poller.js";
 import { pingLmStudio } from "./llm/client.js";
 import { queue } from "./queue/queue.js";
@@ -106,6 +107,13 @@ async function main(): Promise<void> {
 
   resumeActiveJobs();
   resumeActiveProjects();
+
+  // Recover stale task runs from previous crashes
+  if (config.project.enabled) {
+    const engine = getWorkflowEngine();
+    engine.recoverStaleRuns().catch(err => logger.warn({ err: (err as Error).message }, "stale run recovery failed"));
+  }
+
   startCiPoller();
 
   // Start SSE heartbeat and oMLX monitoring

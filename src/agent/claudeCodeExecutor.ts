@@ -132,26 +132,19 @@ async function createWorktree(
   branch: string,
   base: string,
 ): Promise<void> {
-  // Prune stale worktree references first
+  // Aggressively clean up any stale state
   await run("git", ["-C", repoDir, "worktree", "prune"], { allowFailure: true });
 
   if (existsSync(wtPath)) {
-    // Clean up stale worktree
     await run("git", ["-C", repoDir, "worktree", "remove", "--force", wtPath], { allowFailure: true });
     if (existsSync(wtPath)) rmSync(wtPath, { recursive: true, force: true });
   }
 
-  // Check if branch exists on remote
-  const hasRemote = await run("git", ["-C", repoDir, "rev-parse", "--verify", `origin/${branch}`], {
-    allowFailure: true,
-  });
-  if (hasRemote.exitCode === 0) {
-    // Resume from existing remote branch
-    await run("git", ["-C", repoDir, "worktree", "add", "-B", branch, wtPath, `origin/${branch}`]);
-  } else {
-    // Create fresh from base
-    await run("git", ["-C", repoDir, "worktree", "add", "-B", branch, wtPath, `origin/${base}`]);
-  }
+  // Delete the local branch if it exists (stale from previous attempt)
+  await run("git", ["-C", repoDir, "branch", "-D", branch], { allowFailure: true });
+
+  // Always create fresh from base — never resume a stale remote branch
+  await run("git", ["-C", repoDir, "worktree", "add", "-B", branch, wtPath, `origin/${base}`]);
 }
 
 async function removeWorktree(repoDir: string, wtPath: string): Promise<void> {
@@ -228,7 +221,7 @@ function validateDiff(stats: DiffStats): string | null {
 // Claude Code invocation
 // ---------------------------------------------------------------------------
 
-async function invokeClaudeCode(wtPath: string, prompt: string): Promise<RunResult> {
+async function invokeClaudeCode(wtPath: string, prompt: string, modelId: string = config.llm.modelPro): Promise<RunResult> {
   const env = buildClaudeCodeEnv();
   const leaks = validateSanitizedEnv(env);
   if (leaks.length > 0) {
@@ -236,15 +229,12 @@ async function invokeClaudeCode(wtPath: string, prompt: string): Promise<RunResu
   }
 
   // Use headless mode so Claude Code actually edits files in the worktree.
-  // --print only outputs text; we need tool use (Edit, Write, Bash).
   // --model forces the oMLX model regardless of settings.json.
   // As root: --allowedTools grants specific tools without --dangerously-skip-permissions.
-  // As non-root: --dangerously-skip-permissions grants all tools.
   const isRoot = process.getuid?.() === 0;
-  const model = config.llm.modelPro;
   const args = isRoot
-    ? ["--model", model, "--allowedTools", "Edit,Write,Read,Bash", "-p", prompt]
-    : ["--model", model, "--dangerously-skip-permissions", "-p", prompt];
+    ? ["--model", modelId, "--allowedTools", "Edit,Write,Read,Bash", "-p", prompt]
+    : ["--model", modelId, "--dangerously-skip-permissions", "-p", prompt];
 
   return run(config.claudeCode.bin, args, {
     cwd: wtPath,
@@ -396,6 +386,12 @@ export class ClaudeCodeTaskExecutor implements TaskExecutor {
     // Build the prompt for Claude Code
     const prompt = buildTaskPrompt(project, task);
 
+    // Select model: fast model for scaffolding (task 0), precise model for coding
+    const taskModel = task.taskIndex === 0
+      ? config.llm.modelFast
+      : config.llm.modelPro;
+    log.info({ taskModel, taskIndex: task.taskIndex }, "selected model for task");
+
     // Implementation loop with retries
     let lastError = "";
     for (let attempt = 0; attempt <= config.claudeCode.maxRetries; attempt++) {
@@ -413,7 +409,7 @@ export class ClaudeCodeTaskExecutor implements TaskExecutor {
         ? `\n\nPREVIOUS ATTEMPT FAILED:\n${lastError}\n\nFix the issue and try again.`
         : "";
 
-      const result = await invokeClaudeCode(wtPath, prompt + retryContext);
+      const result = await invokeClaudeCode(wtPath, prompt + retryContext, taskModel);
       if (result.exitCode !== 0 && !result.stdout.trim()) {
         lastError = `Claude Code exited ${result.exitCode}: ${result.stderr.slice(0, 2000)}`;
         log.warn({ attempt, exitCode: result.exitCode }, "Claude Code failed");

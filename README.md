@@ -45,10 +45,15 @@ You create a GitHub issue
 | Role | Provider | Model | Why |
 |------|----------|-------|-----|
 | **Planning** | Amazon Bedrock | Claude Opus 4.6 | Smart enough to decompose complex projects into phased, dependency-aware tasks |
-| **Coding** | oMLX (local) | Qwen 3.6 35B (MLX 8-bit) | Fast local inference on Apple Silicon, free, runs overnight without API costs |
+| **Scaffolding** | oMLX (local) | Qwen3-Coder-Next 4-bit | Fast for first task in each phase (project setup, boilerplate). ~3x faster than 35B |
+| **Coding** | oMLX (local) | Qwen 3.6 35B (MLX 8-bit) | Precise for implementation tasks (features, logic, tests) |
 
-The planner (Opus) does the thinking. The coder (Qwen) does the typing. ai-dev orchestrates
-everything: worktrees, PRs, CI monitoring, merge conflict resolution, and memory management.
+The planner (Opus) does the thinking. The fast coder (Qwen-Next 4bit) scaffolds. The precise
+coder (Qwen 35B) implements features. ai-dev orchestrates everything: worktrees, PRs, CI
+monitoring, merge conflict resolution, and memory management.
+
+Task 0 in each phase (typically scaffolding/setup) uses the fast model. All subsequent tasks
+use the precise 35B model for higher quality code.
 
 ## Trigger labels
 
